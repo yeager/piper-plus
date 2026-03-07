@@ -73,6 +73,8 @@ class ModelConfig:
     n_layers_q: int = 3
     use_spectral_norm: bool = False
     gin_channels: int = 0  # single speaker
+    use_zero_shot: bool = False
+    spk_embed_dim: int = 192  # CAM++ output dimension
     use_sdp: bool = True  # StochasticDurationPredictor
     segment_size: int = 8192
 
@@ -105,7 +107,9 @@ class ModelConfig:
         return self.audio.upsample_kernel_sizes
 
     def __post_init__(self):
-        if self.is_multispeaker and (self.gin_channels == 0):
+        if self.use_zero_shot and (self.gin_channels == 0):
+            self.gin_channels = 768
+        elif self.is_multispeaker and (self.gin_channels == 0):
             self.gin_channels = 512
 
 

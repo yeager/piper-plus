@@ -97,11 +97,10 @@ test = [
     "types-requests==2.31.0",
     "types-PyYAML==6.0.12",
 ]
-
 zero-shot = [
-    "onnxruntime>=1.16.0",
-    "torchaudio>=2.0.0",
-    "soundfile>=0.12.0",
+    "onnxruntime>=1.24.3",
+    "soundfile>=0.13.1",
+    "torchaudio>=2.10.0",
 ]
 
 [[tool.uv.index]]
@@ -127,6 +126,7 @@ members = [
 dev-dependencies = [
     "ruff==0.12.5",
     "pytest==7.4.3",
+    "cython>=3.2.4",
 ]
 
 [tool.ruff]

@@ -750,6 +750,8 @@ class SynthesizerTrn(nn.Module):
         gin_channels: int = 0,
         use_sdp: bool = True,
         prosody_dim: int = 16,
+        use_zero_shot: bool = False,
+        spk_embed_dim: int = 192,
     ):
         super().__init__()
         self.n_vocab = n_vocab
@@ -771,6 +773,8 @@ class SynthesizerTrn(nn.Module):
         self.n_speakers = n_speakers
         self.gin_channels = gin_channels
         self.prosody_dim = prosody_dim
+        self.use_zero_shot = use_zero_shot
+        self.spk_embed_dim = spk_embed_dim
 
         self.use_sdp = use_sdp
 
@@ -824,7 +828,9 @@ class SynthesizerTrn(nn.Module):
                 dp_in_channels, 256, 3, 0.5, gin_channels=gin_channels
             )
 
-        if n_speakers > 1:
+        if use_zero_shot:
+            self.spk_proj = nn.Linear(spk_embed_dim, gin_channels)
+        elif n_speakers > 1:
             self.emb_g = nn.Embedding(n_speakers, gin_channels)
 
     def _prepare_prosody_input(self, x, x_mask, prosody_features):
@@ -865,9 +871,11 @@ class SynthesizerTrn(nn.Module):
             x_dp = x
         return x_dp
 
-    def forward(self, x, x_lengths, y, y_lengths, sid=None, prosody_features=None):
+    def forward(self, x, x_lengths, y, y_lengths, sid=None, prosody_features=None, speaker_embedding=None):
         x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths)
-        if self.n_speakers > 1:
+        if self.use_zero_shot and speaker_embedding is not None:
+            g = self.spk_proj(speaker_embedding).unsqueeze(-1)  # [b, h, 1]
+        elif self.n_speakers > 1:
             g = self.emb_g(sid).unsqueeze(-1)  # [b, h, 1]
         else:
             g = None
@@ -941,9 +949,12 @@ class SynthesizerTrn(nn.Module):
         noise_scale_w=0.8,
         max_len=None,
         prosody_features=None,
+        speaker_embedding=None,
     ):
         x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths)
-        if self.n_speakers > 1:
+        if self.use_zero_shot and speaker_embedding is not None:
+            g = self.spk_proj(speaker_embedding).unsqueeze(-1)  # [b, h, 1]
+        elif self.n_speakers > 1:
             assert sid is not None, "Missing speaker id"
             g = self.emb_g(sid).unsqueeze(-1)  # [b, h, 1]
         else:

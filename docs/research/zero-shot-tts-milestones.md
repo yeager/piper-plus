@@ -164,39 +164,12 @@ VITSの `SynthesizerTrn` にzero-shot対応の `spk_proj` (Linear射影層) を�
 
 ### タスク
 
-- [ ] **config.py** — `ModelConfig` にフィールド追加:
-  - `use_zero_shot: bool = False`
-  - `spk_embed_dim: int = 192`
-- [ ] **models.py** — `SynthesizerTrn.__init__` (行731-828) 変更:
-  ```python
-  self.use_zero_shot = use_zero_shot
-  if use_zero_shot:
-      self.spk_proj = nn.Linear(spk_embed_dim, gin_channels)  # 192 → 768
-  elif n_speakers > 1:
-      self.emb_g = nn.Embedding(n_speakers, gin_channels)
-  ```
-- [ ] **models.py** — `SynthesizerTrn.forward` (行868-932) 変更:
-  ```python
-  def forward(self, x, x_lengths, y, y_lengths, sid=None,
-              prosody_features=None, speaker_embedding=None):
-      if self.use_zero_shot and speaker_embedding is not None:
-          g = self.spk_proj(speaker_embedding).unsqueeze(-1)  # [B, 768, 1]
-      elif self.n_speakers > 1 and sid is not None:
-          g = self.emb_g(sid).unsqueeze(-1)
-      else:
-          g = None
-      # 以降変更なし — g の形状 [B, gin_channels, 1] が共通
-  ```
-- [ ] **models.py** — `SynthesizerTrn.infer` (行934-983) に同等の変更を適用
-- [ ] **gin_channels統一ガード**: `use_zero_shot=True` かつ `gin_channels=0` の場合に768を強制設定
-  - 背景: `config.py` L108-109と`lightning.py` L94-95で512にフォールバックするパスがあるが、`__main__.py` L322-323ではマルチスピーカー時に768を設定。zero-shot時はgin_channels=768を保証する必要がある
-- [ ] **単体テスト** `test_zero_shot.py`:
-  - `SynthesizerTrn(use_zero_shot=True)` で `spk_proj` が存在
-  - `SynthesizerTrn(use_zero_shot=False, n_speakers=20)` で `emb_g` が存在 (従来モード)
-  - `forward` に `speaker_embedding` (shape `[1, 192]`) を渡し出力形状が正常
-  - `infer` に `speaker_embedding` を渡し音声出力の形状が正常
-  - `spk_proj.weight.shape == (768, 192)` の検証
-  - 既存 `n_speakers > 1` + `sid` モードのregressionテスト
+- [x] **config.py** — `ModelConfig` にフィールド追加: `use_zero_shot`, `spk_embed_dim`
+- [x] **models.py** — `SynthesizerTrn.__init__`: `spk_proj` / `emb_g` dual-mode
+- [x] **models.py** — `SynthesizerTrn.forward`: `speaker_embedding` 引数追加、g生成分岐
+- [x] **models.py** — `SynthesizerTrn.infer`: 同等の変更
+- [x] **gin_channels統一ガード**: config.py, lightning.py でzero-shot時768を強制
+- [x] **単体テスト** `test_zero_shot.py`: 10テスト全パス (init 5, forward 2, infer 3)
 
 ### 受入基準
 

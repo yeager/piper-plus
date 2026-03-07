@@ -73,7 +73,7 @@ class TestWavLMDiscriminator:
     @pytest.mark.unit
     @pytest.mark.training
     @pytest.mark.skipif(
-        not torch.cuda.is_available(),
+        torch is None or not torch.cuda.is_available(),
         reason="WavLM tests require GPU for practical performance",
     )
     def test_wavlm_discriminator_forward(self):
@@ -136,7 +136,7 @@ class TestWavLMDiscriminator:
     @pytest.mark.unit
     @pytest.mark.training
     @pytest.mark.skipif(
-        not torch.cuda.is_available(),
+        torch is None or not torch.cuda.is_available(),
         reason="WavLM tests require GPU for practical performance",
     )
     def test_wavlm_discriminator_loss_compatibility(self):

@@ -305,3 +305,45 @@ def inference_params():
         "length_scale": 1.0,
         "noise_scale_w": 0.8,
     }
+
+
+@pytest.fixture(scope="module")
+def mock_vits_model_zero_shot():
+    """Zero-shot対応のモックVITSモデルを作成"""
+    import torch
+
+    from piper_train.vits.models import SynthesizerTrn
+
+    torch.manual_seed(42)
+
+    model = SynthesizerTrn(
+        n_vocab=50,
+        spec_channels=513,
+        segment_size=8192,
+        inter_channels=192,
+        hidden_channels=192,
+        filter_channels=768,
+        n_heads=2,
+        n_layers=6,
+        kernel_size=3,
+        p_dropout=0.1,
+        resblock="1",
+        resblock_kernel_sizes=[3, 7, 11],
+        resblock_dilation_sizes=[[1, 3, 5], [1, 3, 5], [1, 3, 5]],
+        upsample_rates=[8, 8, 2, 2],
+        upsample_initial_channel=512,
+        upsample_kernel_sizes=[16, 16, 4, 4],
+        n_speakers=1,
+        gin_channels=768,
+        use_sdp=True,
+        prosody_dim=16,
+        use_zero_shot=True,
+        spk_embed_dim=192,
+    )
+
+    model.eval()
+
+    with torch.no_grad():
+        model.dec.remove_weight_norm()
+
+    return model

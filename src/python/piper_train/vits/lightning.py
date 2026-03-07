@@ -78,6 +78,9 @@ class VitsModel(pl.LightningModule):
         num_test_examples: int = 5,
         validation_split: float = 0.1,
         max_phoneme_ids: int | None = None,
+        # Zero-shot TTS
+        use_zero_shot: bool = False,
+        spk_embed_dim: int = 192,
         # WavLM Discriminator (enabled by default for improved audio quality)
         use_wavlm_discriminator: bool = True,
         wavlm_model_name: str = "microsoft/wavlm-base-plus",
@@ -90,8 +93,9 @@ class VitsModel(pl.LightningModule):
         )
 
         # Fix gin_channels BEFORE save_hyperparameters() so the correct value is saved
-        # This fixes the bug where gin_channels=0 was saved for multi-speaker models
-        if (num_speakers > 1) and (gin_channels <= 0):
+        if use_zero_shot and (gin_channels <= 0):
+            gin_channels = 768
+        elif (num_speakers > 1) and (gin_channels <= 0):
             gin_channels = 512
 
         self.save_hyperparameters()
@@ -118,6 +122,8 @@ class VitsModel(pl.LightningModule):
             gin_channels=self.hparams.gin_channels,
             use_sdp=self.hparams.use_sdp,
             prosody_dim=self.hparams.prosody_dim,
+            use_zero_shot=self.hparams.use_zero_shot,
+            spk_embed_dim=self.hparams.spk_embed_dim,
         )
         self.model_d = MultiPeriodDiscriminator(
             use_spectral_norm=self.hparams.use_spectral_norm
