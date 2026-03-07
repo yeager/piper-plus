@@ -216,12 +216,12 @@ VITSの `SynthesizerTrn` にzero-shot対応の `spk_proj` (Linear射影層) を�
 
 #### losses.py — 新規損失関数
 
-- [ ] `speaker_consistency_loss(gen_embedding, ref_embedding)` 追加:
+- [x] `speaker_consistency_loss(gen_embedding, ref_embedding)` 追加:
   ```python
   def speaker_consistency_loss(gen_embedding, ref_embedding):
       return 1.0 - F.cosine_similarity(gen_embedding, ref_embedding, dim=-1).mean()
   ```
-- [ ] `dino_loss(student_emb, teacher_emb, center, tau_s, tau_t)` 追加:
+- [x] `dino_loss(student_emb, teacher_emb, center, tau_s, tau_t)` 追加:
   ```python
   def dino_loss(student_emb, teacher_emb, center, tau_s=0.1, tau_t=0.04):
       student_out = F.log_softmax(student_emb / tau_s, dim=-1)
@@ -231,53 +231,46 @@ VITSの `SynthesizerTrn` にzero-shot対応の `spk_proj` (Linear射影層) を�
 
 #### lightning.py — CAM++統合と学習ループ
 
-- [ ] `VitsModel.__init__` にパラメータ追加: `use_zero_shot`, `spk_embed_dim`, `c_spk=9.0`, `c_dino=0.1`, `freeze_speaker_encoder_steps=100000`
-- [ ] CAM++ Speaker Encoder のロード処理:
-  - `use_zero_shot=True` の場合にPyTorch版CAM++をロード
-  - Phase 1: 全パラメータを `requires_grad=False` に設定
-  - `self.dino_center` バッファ初期化 (shape: `[spk_embed_dim]`)
-  - `self.current_tau_t` ウォームアップスケジュール (0.04 → 0.07)
-- [ ] `SynthesizerTrn` インスタンス化に `use_zero_shot`, `spk_embed_dim` を渡す (行100-121)
-- [ ] `training_step_g` 変更:
-  - バッチから `speaker_embedding` を取得
-  - SCL計算: `self.speaker_encoder(y_hat)` → `speaker_consistency_loss` → `loss_gen_all += c_spk * loss_scl`
-  - DINO計算: `dino_loss(gen_emb, ref_emb.detach(), self.dino_center)` → `loss_gen_all += c_dino * loss_dino`
-  - DINO center EMA更新: `self.dino_center = 0.996 * self.dino_center + 0.004 * ref_emb.mean(0)`
-  - ログ: `loss_scl`, `loss_dino` をWandBに記録
-- [ ] `on_train_batch_start` でPhase切り替え:
-  - `global_step == freeze_speaker_encoder_steps` でCAM++解凍
-- [ ] `configure_optimizers` 変更:
-  - CAM++ パラメータを別param_groupとして追加 (lr_ratio=0.1)
-- [ ] **FP16対策**: CAM++への入力を明示的に `float32` に変換 (`audio.float()`)
-  - WavLM Discriminatorと同様のパターン (models.py L647参照)
+- [x] `VitsModel.__init__` にパラメータ追加: `use_zero_shot`, `spk_embed_dim`, `c_spk=9.0`, `c_dino=0.1`, `freeze_speaker_encoder_steps=100000`
+- [ ] CAM++ Speaker Encoder のロード処理: (PyTorch版CAM++未入手のため保留、ONNX監視のみ)
+  - [x] `self.dino_center` バッファ初期化 (shape: `[spk_embed_dim]`)
+  - [ ] `self.current_tau_t` ウォームアップスケジュール (0.04 → 0.07) — PyTorch encoder待ち
+- [x] `SynthesizerTrn` インスタンス化に `use_zero_shot`, `spk_embed_dim` を渡す
+- [x] `training_step_g` 変更:
+  - バッチから `speaker_embedding` を取得・model_gに受け渡し
+  - SCL/DINO計算: PyTorch Speaker Encoder統合時に有効化予定
+- [ ] `on_train_batch_start` でPhase切り替え: PyTorch encoder待ち
+- [ ] `configure_optimizers` 変更: PyTorch encoder待ち
+- [ ] **FP16対策**: PyTorch encoder統合時に対応
 
 #### dataset.py — speaker_embedding 対応
 
-- [ ] `Utterance` dataclass (行18-24): `speaker_embedding_path: Path | None = None` 追加
-- [ ] `UtteranceTensors` dataclass (行28-34): `speaker_embedding: FloatTensor | None = None` 追加
-- [ ] `Batch` dataclass (行42-50): `speaker_embeddings: FloatTensor | None = None` 追加
-- [ ] `PiperDataset.__getitem__` (行82-132): `.npy` ファイルからembeddingロード
-  - I/O最適化: 192dim x float32 = 768 bytes と軽量だが、初期化時に全embeddingをメモリにプリロード (辞書キャッシュ) することを検討
-- [ ] `PiperDataset.load_utterance` (行192-201): JSONから `speaker_embedding_path` パース
-- [ ] `UtteranceCollate.__call__` (行209-305): `speaker_embeddings` のスタッキング (固定長192dimのためパディング不要)
+- [x] `Utterance` dataclass: `speaker_embedding_path: Path | None = None` 追加
+- [x] `UtteranceTensors` dataclass: `speaker_embedding: FloatTensor | None = None` 追加
+- [x] `Batch` dataclass: `speaker_embeddings: FloatTensor | None = None` 追加
+- [x] `PiperDataset.__getitem__`: `.npy` ファイルからembeddingロード (`np.load`)
+- [x] `PiperDataset.load_utterance`: JSONから `speaker_embedding_path` パース
+- [x] `UtteranceCollate.__call__`: `speaker_embeddings` のスタッキング (固定長192dimのためパディング不要)
 
 #### __main__.py — CLI引数
 
-- [ ] 以下の引数を追加:
+- [x] 以下の引数を追加:
   - `--zero-shot` (`action="store_true"`)
   - `--spk-embed-dim` (default: 192)
   - `--c-spk` (default: 9.0)
   - `--c-dino` (default: 0.1)
+  - `--speaker-encoder-path` (default: None)
   - `--freeze-speaker-encoder-steps` (default: 100000)
-- [ ] `dict_args` への反映: `VitsModel` に上記パラメータを渡す
-- [ ] `--zero-shot` 時に `gin_channels=768` を強制
+- [x] `dict_args` への反映: `VitsModel` に上記パラメータを渡す
+- [x] `--zero-shot` 時に `gin_channels=768` を強制
 
 #### テスト
 
-- [ ] SCL損失の単体テスト (出力範囲: 0-2)
-- [ ] DINO損失の単体テスト (出力: 正の値)
-- [ ] Phase切り替えロジックのモックテスト
-- [ ] `use_zero_shot=False` 時の既存学習ループregressionテスト
+- [x] SCL損失の単体テスト (出力範囲: 0-2) — 4テスト
+- [x] DINO損失の単体テスト (出力: 正の値) — 4テスト
+- [ ] Phase切り替えロジックのモックテスト — PyTorch encoder待ち
+- [x] `use_zero_shot=False` 時の既存学習ループregressionテスト
+- [x] Dataset speaker_embedding対応テスト — 3テスト
 
 ### 受入基準
 
