@@ -182,9 +182,15 @@ def main() -> None:
     # Check if model uses prosody features
     has_prosody = getattr(model_g, "prosody_dim", 0) > 0
 
+    # Check if model uses zero-shot speaker embedding
+    use_zero_shot = getattr(model_g, "use_zero_shot", False)
+    spk_embed_dim = getattr(model_g, "spk_embed_dim", 192)
+
     stochastic = args.stochastic
 
-    def infer_forward(text, text_lengths, scales, sid=None, prosody_features=None):
+    def infer_forward(
+        text, text_lengths, scales, sid=None, prosody_features=None, speaker_embedding=None
+    ):
         """
         Efficient forward function that returns both audio and duration information.
         The duration predictor is called once to compute both durations and audio output.
@@ -196,7 +202,9 @@ def main() -> None:
         # 1. Encoder
         x, m_p, logs_p, x_mask = model_g.enc_p(text, text_lengths)
 
-        if model_g.n_speakers > 1 and sid is not None:
+        if use_zero_shot:
+            g = model_g.spk_proj(speaker_embedding).unsqueeze(-1)  # [b, gin_channels, 1]
+        elif model_g.n_speakers > 1 and sid is not None:
             g = model_g.emb_g(sid).unsqueeze(-1)
         else:
             g = None
@@ -249,7 +257,10 @@ def main() -> None:
     sequence_lengths = torch.LongTensor([sequences.size(1)])
 
     sid: torch.LongTensor | None = None
-    if num_speakers > 1:
+    dummy_speaker_embedding: torch.Tensor | None = None
+    if use_zero_shot:
+        dummy_speaker_embedding = torch.randn(1, spk_embed_dim, dtype=torch.float32)
+    elif num_speakers > 1:
         sid = torch.LongTensor([0])
 
     # noise, noise_w, length
@@ -262,7 +273,15 @@ def main() -> None:
         prosody_features = torch.zeros(1, dummy_input_length, 3, dtype=torch.long)
 
     # Include all inputs for compatibility
-    if num_speakers > 1 and has_prosody:
+    if use_zero_shot and has_prosody:
+        dummy_input = (
+            sequences, sequence_lengths, scales, None, prosody_features, dummy_speaker_embedding
+        )
+    elif use_zero_shot:
+        dummy_input = (
+            sequences, sequence_lengths, scales, None, None, dummy_speaker_embedding
+        )
+    elif num_speakers > 1 and has_prosody:
         dummy_input = (sequences, sequence_lengths, scales, sid, prosody_features)
     elif num_speakers > 1:
         dummy_input = (sequences, sequence_lengths, scales, sid)
@@ -281,7 +300,10 @@ def main() -> None:
     }
 
     # Configure input names based on model type
-    if num_speakers > 1:
+    if use_zero_shot:
+        input_names = ["input", "input_lengths", "scales", "speaker_embedding"]
+        dynamic_axes["speaker_embedding"] = {0: "batch_size"}
+    elif num_speakers > 1:
         input_names = ["input", "input_lengths", "scales", "sid"]
         dynamic_axes["sid"] = {0: "batch_size"}
     else:
@@ -295,6 +317,9 @@ def main() -> None:
             "Exporting model with prosody features support (prosody_dim=%d)",
             model_g.prosody_dim,
         )
+
+    if use_zero_shot:
+        _LOGGER.info("Exporting zero-shot model (spk_embed_dim=%d)", spk_embed_dim)
 
     torch.onnx.export(
         model=model_g,

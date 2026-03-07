@@ -98,6 +98,10 @@ def main():
         help="Language for --text mode (default: ja)",
     )
     parser.add_argument(
+        "--speaker-embedding",
+        help="Path to speaker embedding .npy file (for zero-shot models)",
+    )
+    parser.add_argument(
         "--speaker-id",
         type=int,
         default=0,
@@ -135,6 +139,15 @@ def main():
         _LOGGER.info("Model supports prosody features (A1/A2/A3)")
     if has_sid:
         _LOGGER.info("Model supports multi-speaker (sid input)")
+
+    has_speaker_embedding = "speaker_embedding" in input_names
+    if has_speaker_embedding:
+        _LOGGER.info("Model supports zero-shot TTS (speaker_embedding input)")
+    if has_speaker_embedding and args.speaker_embedding is None:
+        _LOGGER.warning(
+            "Zero-shot model detected but --speaker-embedding not provided. "
+            "Output quality may be degraded."
+        )
 
     # Handle --text mode: convert text to phoneme_ids and prosody_features
     phoneme_id_map = None
@@ -218,7 +231,13 @@ def main():
             "scales": scales,
         }
 
-        if sid is not None:
+        # speaker_embedding の処理 (zero-shot model)
+        if has_speaker_embedding and args.speaker_embedding:
+            spk_emb = np.load(args.speaker_embedding).astype(np.float32)
+            if spk_emb.ndim == 1:
+                spk_emb = spk_emb.reshape(1, -1)
+            inputs["speaker_embedding"] = spk_emb
+        elif has_sid and sid is not None:
             inputs["sid"] = sid
 
         # Handle prosody features if model supports them
