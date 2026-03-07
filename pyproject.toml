@@ -203,6 +203,8 @@ inline-quotes = "double"
 "src/python/piper_train/phonemize/english.py" = ["PLC0415"]
 # dataset.py: lazy import of numpy inside __getitem__ for optional speaker embedding
 "src/python/piper_train/vits/dataset.py" = ["PLC0415"]
+# extract_speaker_embedding.py: onnxruntime lazy import in main()
+"src/python/piper_train/extract_speaker_embedding.py" = ["PLC0415"]
 # prepare scripts: 条件付きインポートを許可
 "src/python/prepare_*.py" = ["PLC0415"]
 # runtime files: 条件付きインポートを許可
