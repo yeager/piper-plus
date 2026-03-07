@@ -93,6 +93,19 @@ class TestZeroShotInit:
         assert param_count == 192 * 768 + 768  # weight + bias
 
     @pytest.mark.unit
+    def test_zero_shot_with_multi_speakers(self):
+        """use_zero_shot=True + n_speakers>1 でも spk_proj が作られ emb_g は作られない"""
+        model = SynthesizerTrn(
+            **MODEL_PARAMS,
+            n_speakers=20,
+            gin_channels=768,
+            use_zero_shot=True,
+            spk_embed_dim=192,
+        )
+        assert hasattr(model, 'spk_proj')
+        assert not hasattr(model, 'emb_g')
+
+    @pytest.mark.unit
     def test_use_zero_shot_attribute(self):
         """use_zero_shot属性が正しく保存される"""
         model_zs = SynthesizerTrn(**MODEL_PARAMS, n_speakers=1, gin_channels=768, use_zero_shot=True)
@@ -162,6 +175,63 @@ class TestZeroShotForward:
         output = model.forward(x, x_lengths, y, y_lengths, sid=sid)
         assert output[0] is not None
         assert output[0].shape[0] == batch_size
+
+    @pytest.mark.unit
+    @pytest.mark.training
+    def test_forward_zero_shot_requires_speaker_embedding(self):
+        """use_zero_shot=True で speaker_embedding=None だと ValueError"""
+        torch.manual_seed(42)
+        model = SynthesizerTrn(
+            **MODEL_PARAMS,
+            n_speakers=1,
+            gin_channels=768,
+            use_zero_shot=True,
+            spk_embed_dim=192,
+        )
+        model.train()
+
+        batch_size = 2
+        text_len = 10
+        spec_len = 50
+
+        x = torch.randint(0, 50, (batch_size, text_len))
+        x_lengths = torch.LongTensor([text_len, text_len])
+        y = torch.randn(batch_size, 513, spec_len)
+        y_lengths = torch.LongTensor([spec_len, spec_len])
+
+        with pytest.raises(ValueError, match="speaker_embedding is required"):
+            model.forward(x, x_lengths, y, y_lengths)
+
+    @pytest.mark.unit
+    @pytest.mark.training
+    def test_forward_output_is_finite(self):
+        """forward() の出力が有限値であること"""
+        torch.manual_seed(42)
+        model = SynthesizerTrn(
+            **MODEL_PARAMS,
+            n_speakers=1,
+            gin_channels=768,
+            use_zero_shot=True,
+            spk_embed_dim=192,
+        )
+        model.train()
+
+        batch_size = 2
+        text_len = 10
+        spec_len = 50
+
+        x = torch.randint(0, 50, (batch_size, text_len))
+        x_lengths = torch.LongTensor([text_len, text_len])
+        y = torch.randn(batch_size, 513, spec_len)
+        y_lengths = torch.LongTensor([spec_len, spec_len])
+        speaker_embedding = torch.randn(batch_size, 192)
+
+        output = model.forward(
+            x, x_lengths, y, y_lengths,
+            speaker_embedding=speaker_embedding,
+        )
+        audio = output[0]
+        assert torch.isfinite(audio).all(), "Output contains NaN or Inf"
 
 
 class TestZeroShotInfer:
@@ -239,3 +309,48 @@ class TestZeroShotInfer:
             output = model.infer(x, x_lengths)
         assert output[0] is not None
         assert output[0].shape[0] == 1
+
+    @pytest.mark.unit
+    @pytest.mark.inference
+    def test_infer_zero_shot_requires_speaker_embedding(self):
+        """infer() で use_zero_shot=True かつ speaker_embedding=None だと ValueError"""
+        torch.manual_seed(42)
+        model = SynthesizerTrn(
+            **MODEL_PARAMS,
+            n_speakers=1,
+            gin_channels=768,
+            use_zero_shot=True,
+            spk_embed_dim=192,
+        )
+        model.eval()
+
+        x = torch.randint(0, 50, (1, 10))
+        x_lengths = torch.LongTensor([10])
+
+        with torch.no_grad():
+            with pytest.raises(ValueError, match="speaker_embedding is required"):
+                model.infer(x, x_lengths)
+
+    @pytest.mark.unit
+    @pytest.mark.inference
+    def test_infer_output_range(self):
+        """infer() の出力が [-1, 1] 範囲であること (tanh)"""
+        torch.manual_seed(42)
+        model = SynthesizerTrn(
+            **MODEL_PARAMS,
+            n_speakers=1,
+            gin_channels=768,
+            use_zero_shot=True,
+            spk_embed_dim=192,
+        )
+        model.eval()
+
+        x = torch.randint(0, 50, (1, 10))
+        x_lengths = torch.LongTensor([10])
+        speaker_embedding = torch.randn(1, 192)
+
+        with torch.no_grad():
+            output = model.infer(x, x_lengths, speaker_embedding=speaker_embedding)
+        audio = output[0]
+        assert torch.isfinite(audio).all(), "Output contains NaN or Inf"
+        assert audio.abs().max() <= 1.0, "Audio output should be in [-1, 1] (tanh)"

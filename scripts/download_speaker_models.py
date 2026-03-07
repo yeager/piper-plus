@@ -61,6 +61,7 @@ class ModelInfo:
 
 # sherpa-onnx GitHub Releases から取得可能なモデル
 # https://github.com/k2-fsa/sherpa-onnx/releases/tag/speaker-recongition-models
+# NOTE: "recongition" is a typo in the official upstream tag name
 _SHERPA_BASE = (
     "https://github.com/k2-fsa/sherpa-onnx/releases/download"
     "/speaker-recongition-models"
@@ -226,12 +227,15 @@ def download_model(
 
     # SHA256検証 (ハッシュが既知の場合)
     if model.sha256:
-        print(f"  Verifying SHA256...", end="")
+        print("  Verifying SHA256...", end="")
         if _verify_sha256(tmp_dest, model.sha256):
-            print(f" OK")
+            print(" OK")
         else:
-            print(f" MISMATCH")
-            print(f"[WARN] SHA256 hash does not match. File may be corrupted.")
+            print(" MISMATCH")
+            print(f"[FAIL] SHA256 hash does not match expected value.")
+            print(f"       Expected: {model.sha256}")
+            tmp_dest.unlink()
+            return False
 
     # リネーム
     tmp_dest.rename(dest)
