@@ -24,19 +24,22 @@
 
 ## 1. エグゼクティブサマリー
 
-### 結論
+### 結論（セクション11-12で更新済み）
 
-Piperにzero-shot話者再現を導入するための推奨アプローチは **ECAPA-TDNN Speaker Encoder + DINO Loss + Speaker Consistency Loss** による高精度統合方式である。既存の話者IDモードとの完全な後方互換性を維持しつつ、VITSアーキテクチャ内で到達可能な最高品質 (SIM-O ~0.65) を目指す。
+> **注**: 本セクションは初期調査時の結論です。推論速度ゼロインパクトの制約を加えた**最終推奨はセクション12**を参照してください。Speaker Encoderの推奨もECAPA-TDNN → **CAM++** に変更されています。
 
-- 既存VITSの `gin_channels` メカニズムをそのまま流用（dual-mode: speaker ID / speaker embedding）
-- Speaker Encoderには **ECAPA-TDNN** (Apache-2.0) を採用、DINO LossとSpeaker Consistency Lossで精度最大化
-- 学習データ: LibriTTS-R (585h, 2,456話者) + JVS (30h, 100話者) + 現行20話者 = **~615h, ~2,576話者**
-- 3フェーズ学習: Speaker Encoder事前学習済み → TTS学習 (encoder凍結) → Joint Training (encoder解凍)
-- 推定学習時間: 約180-240時間 (L4 GPU x4)
+Piperにzero-shot話者再現を導入するための最終推奨アプローチは **事前計算Embedding方式 + CAM++ Speaker Encoder (Apache-2.0) + DINO Loss + Speaker Consistency Loss** である。Speaker Encoderを推論パイプラインから完全に分離することで、推論速度ゼロインパクトを実現する。
+
+- **推論時**: 事前計算済みembedding (.npy) をファイルから読み込むだけ（追加コスト <1ms）
+- Speaker Encoderには **CAM++** (Apache-2.0, EER 0.73%, 7.2Mパラメータ) を採用
+- 学習データ: LibriTTS-R (585h, 2,456話者) + JVS (30h, 100話者) + 現行20話者 = **~715h, ~2,576話者**
+- 2フェーズ学習: Speaker Encoder凍結 (100K iter) → 全解凍+DINO/SCL (200K iter)
+- 推定学習時間: 約190-250時間 (L4 GPU x4)
+- 具体的な実装計画は [zero-shot-tts-implementation-plan.md](./zero-shot-tts-implementation-plan.md) を参照
 
 ### VITSの品質上限と将来展望
 
-定量評価による調査の結果、VITSアーキテクチャのzero-shot話者類似度の上限は **SIM-O ~0.65** である。最新のFlow Matching/Diffusion系モデル (CosyVoice 3: SIM 77.4%, MaskGCT: SIM-O 0.687) との差は約0.15-0.20ポイント存在する。将来的にさらなる品質向上を目指す場合は、アーキテクチャの刷新（セクション7で詳述）を検討する。
+定量評価による調査の結果、VITSアーキテクチャのzero-shot話者類似度の上限は **SIM-O ~0.75** である。最新のLLM+Flow Matching系モデル (Qwen3-TTS: SIM 0.789, CosyVoice 3: SIM 77.4%, MaskGCT: SIM-O 0.687) との差は約0.05-0.10ポイント存在する。将来的にさらなる品質向上を目指す場合は、アーキテクチャの刷新（セクション7で詳述）を検討する。
 
 ### 推奨ロードマップ
 
@@ -96,6 +99,11 @@ Zero-shot TTSは大きく4カテゴリに分類される。
 | OpenVoice v2 | MyShell/MIT | Tone Color Converter | Tone Color特徴抽出 |
 | F5-TTS | SWivid | Non-AR Flow Matching + DiT | フィラートークンパディング |
 | CosyVoice 1/2/3 | Alibaba | LLM + Conditional Flow Matching | Semantic tokens + 参照音声 |
+| Qwen3-TTS | Alibaba Qwen | Dual-track LM + Dual Tokenizer | Semantic tokens + 参照音声 |
+| MegaTTS 3 | ByteDance | Latent Diffusion Transformer | WavVAE latent + prosody LM |
+| Kokoro | hexgrad | StyleTTS2 + ISTFTNet | Style encoder (3秒) |
+| OpenAudio S1 | Fish Audio | Dual-AR + FireflyCodec | Reference audio prompt |
+| Chatterbox | Resemble AI | Flow Transformer | Speaker conditioning (5秒) |
 
 ### 2.3 性能・品質比較
 
@@ -112,6 +120,11 @@ Zero-shot TTSは大きく4カテゴリに分類される。
 | CosyVoice 3 | 数秒 | MOS 5.53 | 低レイテンシ | Apache-2.0 | Yes |
 | OpenVoice v2 | 数秒 | 良好 | 高速 | MIT | Yes |
 | Bark | プリセット | 良好 | ~リアルタイム | MIT | Yes |
+| Qwen3-TTS | 数秒 | WER 1.24, SIM 0.789 | 97msレイテンシ | Apache-2.0 | Yes |
+| MegaTTS 3 | 数秒 | MOS 4.28-4.32 | 高速 (45Mパラメータ) | Apache-2.0 | Yes |
+| Kokoro | 数秒 | 高品質 | 高速 | Apache-2.0 | Yes |
+| OpenAudio S1 | 数秒 | TTS-Arena2 1位 | 高速 | CC-BY-NC-SA | Yes |
+| Chatterbox | 5秒 | ElevenLabs超え | 200msレイテンシ | MIT | Yes |
 
 ### 2.4 日本語対応状況
 
@@ -121,8 +134,8 @@ Zero-shot TTSは大きく4カテゴリに分類される。
 | XTTS v2 | 対応 | 16言語の1つ |
 | StyleTTS 2 | 英語のみ | 学習にはphonemizerが必要 |
 | VoiceBox | 非対応 | 英仏西葡独波 |
-| GPT-SoVITS | **ネイティブ対応** | v3で日本語改善、コミュニティ活発 |
-| Fish Speech | **ネイティブ対応** | 日本語10万時間超で学習 |
+| GPT-SoVITS | **ネイティブ対応** | v4で48kHz出力、日本語改善、コミュニティ活発 |
+| OpenAudio S1 (旧Fish Speech) | **ネイティブ対応** | 日本語対応、4Bパラメータ |
 | F5-TTS | 対応 | Emiliaデータセットで多言語学習 |
 | CosyVoice | **ネイティブ対応** | 9言語、cross-lingual対応 |
 | OpenVoice v2 | 対応 | 6言語 |
@@ -316,6 +329,8 @@ g = self.speaker_encoder(ref_audio).unsqueeze(-1)  # [b, gin_channels, 1]
 
 ## 6. Piperへの推奨アプローチ
 
+> **注**: 本セクションは初期調査時の推奨です。推論速度ゼロインパクトの制約を加えた**最終推奨はセクション11-12**を参照してください。ONNX設計がref_mel入力方式 → 事前計算speaker_embedding入力方式に変更されています。
+
 ### 6.1 段階的導入ロードマップ（精度最優先版）
 
 #### Phase 1: ECAPA-TDNN Speaker Encoder + DINO/SCL Loss（最優先）
@@ -393,24 +408,28 @@ VITSの品質上限 (SIM-O ~0.65) を超えるために、Flow Matching/Diffusio
 
 ### 7.2 Seed-TTS Eval ベンチマーク
 
-**test-en (英語):**
+**test-en (英語):** *(2026-03-07 更新)*
 
-| モデル | WER (%) | SIM (%) |
-|--------|---------|---------|
-| CosyVoice 3 (1.5B RL) | **1.45** | **77.4** |
-| Seed-TTS | 2.25 | 76.2 |
-| F5-TTS | 2.00 | 67.0 |
-| MaskGCT | 2.62 | 71.7 |
-| CosyVoice 2 | 3.09 | 65.9 |
-| CosyVoice 1 | 4.29 | 60.9 |
+| モデル | WER (%) | SIM (%) | 備考 |
+|--------|---------|---------|------|
+| **Qwen3-TTS (1.7B)** | **1.24** | **78.9** | 2026-01, 現在のSOTA |
+| CosyVoice 3 (1.5B RL) | 1.45 | 77.4 | 2025-12 |
+| VoxCPM | 1.85 | N/A | 2025-09 |
+| F5-TTS | 2.00 | 67.0 | |
+| Seed-TTS | 2.25 | 76.2 | |
+| MaskGCT | 2.62 | 71.7 | |
+| CosyVoice 2 | 3.09 | 65.9 | |
 
-**test-zh (中国語):**
+**test-zh (中国語):** *(2026-03-07 更新)*
 
-| モデル | CER (%) | SIM (%) |
-|--------|---------|---------|
-| CosyVoice 3 (1.5B RL) | **0.71** | N/A |
-| CosyVoice 3 (0.5B) | 0.81 | **77.4** |
-| MaskGCT | 2.27 | 77.4 |
+| モデル | CER (%) | SIM (%) | 備考 |
+|--------|---------|---------|------|
+| CosyVoice 3 (1.5B RL) | **0.71** | N/A | 2025-12 |
+| **Qwen3-TTS (1.7B)** | 0.77 | 高 | 2026-01 |
+| CosyVoice 3 (0.5B) | 0.81 | 77.4 | |
+| GLM-TTS (RL) | 0.89 | 76.4 | 2025-12 |
+| VoxCPM | 0.93 | N/A | 2025-09 |
+| MaskGCT | 2.27 | 77.4 | |
 
 ### 7.3 主観評価 (MOS / CMOS / SMOS)
 
@@ -476,12 +495,17 @@ VITSの品質上限 (SIM-O ~0.65) を超えるために、Flow Matching/Diffusio
 
 精度最優先で将来的にVITSを超える場合の候補:
 
-| 候補 | 総合品質 | 話者類似度 | OSS | 日本語 |
-|------|---------|----------|-----|--------|
-| **CosyVoice 2/3** | S | S | 完全OSS (Apache-2.0) | 対応 |
-| **MaskGCT** | S | A+ | 完全OSS (CC-BY-NC) | 学習データ次第 |
-| **F5-TTS** | A+ | A | 完全OSS (MIT) | 学習データ次第 |
-| GPT-SoVITS v3 | A | A+ | 完全OSS (MIT) | **最良** |
+| 候補 | 総合品質 | 話者類似度 | OSS | ライセンス | 日本語 |
+|------|---------|----------|-----|-----------|--------|
+| **Qwen3-TTS** | S+ | S+ | 完全OSS | **Apache-2.0** | 対応 (10言語) |
+| **CosyVoice 3** | S | S | 完全OSS | **Apache-2.0** | 対応 (9言語) |
+| **VoxCPM** | S | A+ | 完全OSS | **Apache-2.0** | 対応見込み |
+| **MegaTTS 3** | A+ | A+ | 完全OSS | **Apache-2.0** | 未対応 |
+| **MaskGCT** | S | A+ | 完全OSS | CC-BY-NC | 学習データ次第 |
+| **F5-TTS** | A+ | A | 完全OSS | MIT/CC-BY-NC | 学習データ次第 |
+| GPT-SoVITS v4 | A | A+ | 完全OSS | **MIT** | **最良** |
+| **Chatterbox** | A+ | A+ | 完全OSS | **MIT** | 対応 (23言語) |
+| Kokoro | A | A | 完全OSS | **Apache-2.0** | 対応 (5言語) |
 
 ---
 
@@ -654,7 +678,7 @@ YourTTSの実験で、英語+他言語の混合学習がzero-shot性能を向上
 | # | 損失関数 | 重み | 効果 | 状態 |
 |---|---------|------|------|------|
 | 1 | VITS損失 (reconstruct + KL + adversarial) | 既存 | 基本音質 | 実装済み |
-| 2 | **Speaker Consistency Loss** | c_spk=1.0 | 話者再現精度 | **新規** |
+| 2 | **Speaker Consistency Loss** | c_spk=9.0 | 話者再現精度 | **新規** |
 | 3 | WavLM Perceptual Loss | c_wavlm=0.5 | 知覚品質 | 実装済み |
 | 4 | **DINO Loss** | c_dino=0.1 | ノイズ耐性、話者分離性 | **新規** |
 
@@ -993,16 +1017,18 @@ Speaker Embeddingを完全にオフラインで事前計算し、`.npy`/`.json`�
 # 現在のONNXグラフ
 sid (int64) → [Gather: emb_g.weight] → g (float32, [1, gin_channels, 1])
 
-# 変更後のONNXグラフ
-speaker_embedding (float32, [1, gin_channels]) → [Unsqueeze] → g (float32, [1, gin_channels, 1])
+# 変更後のONNXグラフ（実装計画書の最終設計）
+speaker_embedding (float32, [1, 192]) → [Linear: spk_proj(192→768)] → [Unsqueeze] → g (float32, [1, 768, 1])
 ```
 
-変わるのは入力付近の1オペレーションのみ。計算量の99.9%以上を占めるEncoder/Flow/Decoder部分は**完全に同一**。
+変わるのは入力付近のGather → Linear+Unsqueezeへの変更のみ。Linear(192→768)の演算コストは数μsであり、計算量の99.9%以上を占めるEncoder/Flow/Decoder部分は**完全に同一**。
+
+> **注**: gin_channelsは`__main__.py`でマルチスピーカーモデルの場合 768 に設定される。CAM++の出力(192次元)は`nn.Linear(192, 768)`でONNXグラフ内で射影される。
 
 #### 速度同一性の根拠
 
 1. **Gatherオペレーション（現在）のコスト**: テーブルから1行取得 = O(gin_channels)のメモリコピー = 数μs
-2. **Unsqueezeオペレーション（変更後）のコスト**: reshape = 数μs
+2. **Linear+Unsqueezeオペレーション（変更後）のコスト**: 192*768の行列乗算+reshape = 数μs
 3. **両者の差**: 実質ゼロ（VITS全体の推論時間の0.001%未満）
 4. **実証**: Coqui TTS (YourTTS) が `nn.Embedding` (speaker_id方式) と `d_vector` (外部embedding方式) の両方をサポートし、推論速度に有意差がないことを確認済み
 
@@ -1216,3 +1242,12 @@ Piperの「軽量・高速推論」要件を完全に維持しつつ、zero-shot
 - OpenVoice: https://github.com/myshell-ai/OpenVoice
 - SV2TTS: https://github.com/CorentinJ/Real-Time-Voice-Cloning
 - Coqui TTS (VITS): https://github.com/coqui-ai/TTS
+- Qwen3-TTS: https://github.com/QwenLM/Qwen3-TTS
+- VoxCPM: https://github.com/OpenBMB/VoxCPM
+- GLM-TTS: https://github.com/zai-org/GLM-TTS
+- MegaTTS 3: https://github.com/bytedance/MegaTTS3
+- Kokoro TTS: https://github.com/hexgrad/kokoro
+- OpenAudio S1 (旧Fish Speech): https://github.com/fishaudio/fish-speech
+- Chatterbox: https://github.com/resemble-ai/chatterbox
+- IndexTTS 2.5: https://github.com/index-tts/index-tts
+- LE-CAM++: https://ieeexplore.ieee.org/document/10800177/

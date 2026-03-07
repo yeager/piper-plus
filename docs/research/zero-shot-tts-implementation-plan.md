@@ -753,6 +753,10 @@ CUDA_VISIBLE_DEVICES="" uv run python -m piper_train.infer_onnx \
 | WavLM Discriminator | **完全互換** | 現在は未使用。将来有効化する場合も学習時のみで独立 | |
 | EMA重み | **完全互換** | export_onnxの処理は変更なし | |
 | `--noise-scale` | **完全互換** | stochastic sampling変更なし | |
+| 疑問詞マーカー拡張 (Issue #204) | **影響なし** | Phonemizer内部処理、独立 | |
+| 文脈依存N variants (Issue #207) | **影響なし** | Phonemizer内部処理、独立 | |
+| SpeakerBalancedBatchSampler | **互換** | zero-shot学習でも話者バランスに有効 | |
+| FP16 Mixed Precision | **完全互換** | 学習・推論ともに変更なし | |
 
 ### 10.2 既存speaker_idモデルからの移行
 
