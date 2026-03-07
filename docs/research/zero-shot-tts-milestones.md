@@ -18,7 +18,7 @@
 6. [M2: 学習パイプライン](#m2-学習パイプライン)
 7. [M3: 推論パイプライン](#m3-推論パイプライン)
 8. [M4: Speaker Embedding 抽出ツール](#m4-speaker-embedding-抽出ツール)
-9. [M5: データ準備・統合](#m5-データ準備統合)
+9. [M5: データ準備スクリプト実装](#m5-データ準備スクリプト実装)
 10. [M6: Phase 1 学習](#m6-phase-1-学習)
 11. [M7: Phase 2 学習](#m7-phase-2-学習)
 12. [M8: 評価・品質検証](#m8-評価品質検証)
@@ -41,11 +41,11 @@
 
 | 項目 | 値 |
 |------|-----|
-| 変更ファイル数 | 8ファイル (修正) + 3ファイル (新規) |
-| 追加コード量 | ~800行 (コア) + ~200行 (テスト) |
-| 実装工数 | ~8日 |
-| GPU計算時間 | ~190-250時間 (L4 x4) |
-| 全体所要期間 | 約4-6週間 |
+| 変更ファイル数 | 8ファイル (修正) + 4ファイル (新規) |
+| 追加コード量 | ~1,100行 (コア) + ~300行 (テスト) |
+| 実装工数 (M0-M5) | ~6日 |
+| GPU計算時間 (M6-M7) | ~190-250時間 (L4 x4) |
+| 全体所要期間 | 実装 ~1週間 + 学習・評価 ~3-5週間 |
 
 ---
 
@@ -72,12 +72,17 @@ Week 1 (実装フェーズ)
   Day 3-4:    M3 (export_onnx.py, infer_onnx.py) ← M1完了後、M2と並行
               M4 完了
   Day 4-5:    M2 完了
+  Day 5-6:    M5 (データ準備スクリプト実装) ← M4完了が前提
 
-Week 2 (データ準備フェーズ)
-  Day 5-7:    M5 (データ準備・統合) ← M4完了が前提
+--- 実装完了ライン (ここまでがコード実装スコープ) ---
+
+Week 2+ (データ取得・前処理フェーズ — 実装スコープ外)
+  データダウンロード: LibriTTS-R, JVS 取得
+  前処理実行: M5スクリプトでデータセット生成
+  GPU確保: L4 x4 利用準備
 
 Week 2-4 (学習フェーズ 1)
-  Day 7+:     M6 (Phase 1 学習) ~60-80h GPU時間
+              M6 (Phase 1 学習) ~60-80h GPU時間
 
 Week 4-6 (学習フェーズ 2)
               M7 (Phase 2 学習) ~130-170h GPU時間
@@ -89,15 +94,16 @@ Week 6 (評価・リリース)
 ### マイルストーン依存関係
 
 ```
-M0 ──→ M1 ──→ M2 ──→ M6 ──→ M7 ──→ M8 ──→ M9
-  │      │            ↑
-  │      └──→ M3 ─────┘
-  │
-  └──→ M4 ──→ M5 ────┘
+M0 ──→ M1 ──→ M2 ──┐
+  │      │          ├──→ M6 ──→ M7 ──→ M8 ──→ M9
+  │      └──→ M3 ──┘      ↑
+  │                        │
+  └──→ M4 ──→ M5 ─────────┘
 ```
 
 - M1, M3, M4 は M0 完了後に並行作業可能
-- M6 開始には M1, M2, M3, M5 の全完了が必要
+- M0〜M5 が実装スコープ (コード実装・テスト)
+- M6 開始にはコード実装 (M1-M5) の全完了 + データセット準備 (M5スクリプト実行) が必要
 - M4 は他の実装タスクと独立
 
 ---
@@ -115,12 +121,7 @@ M0 ──→ M1 ──→ M2 ──→ M6 ──→ M7 ──→ M8 ──→ M9
   - 入手先: sherpa-onnx (ONNX直接利用可能) or ModelScope (`iic/speech_campplus_sv_zh-cn_16k-common`)
   - 動作確認: 入力 80-dim Fbank @ 16kHz → 出力 192-dim embedding
 - [ ] WeSpeaker ResNet293 評価用モデルのダウンロード (`Wespeaker/wespeaker-voxceleb-resnet293-LM`)
-- [ ] 学習データコーパスの取得
-  - [ ] LibriTTS-R (585h, 2,456話者, CC-BY-4.0)
-  - [ ] JVS (30h, 100話者, CC-BY-SA-4.0)
-  - [ ] moe-speech-20speakers-v2 (100h, 20話者) 利用可能確認
 - [ ] ライセンス監査: CAM++ (Apache-2.0), WeSpeaker (Apache-2.0), onnxruntime (MIT), torchaudio (BSD-2) → GPL-free確認
-- [ ] L4 GPU x4 の利用可能性確認
 - [ ] 依存パッケージの確認と `pyproject.toml` の更新計画
   - 新規 optional-dependencies グループ `[zero-shot]` の設計
   - 必要パッケージ: `onnxruntime` (既存暗黙使用), `torchaudio` (既存WavLMで使用), `soundfile`
@@ -130,8 +131,6 @@ M0 ──→ M1 ──→ M2 ──→ M6 ──→ M7 ──→ M8 ──→ M9
 
 1. CAM++ ONNXモデルで任意のWAVファイルから192次元embeddingが抽出可能
 2. 全外部依存のライセンスがGPL-freeであることを文書化済み
-3. 全学習データが利用可能な状態
-4. L4 GPU x4 にSSH接続し学習開始可能
 
 ### 依存関係
 
@@ -139,7 +138,7 @@ M0 ──→ M1 ──→ M2 ──→ M6 ──→ M7 ──→ M8 ──→ M9
 
 ### 想定工数
 
-- 0.5-1日
+- 0.5日
 
 ### 成果物
 
@@ -148,7 +147,6 @@ M0 ──→ M1 ──→ M2 ──→ M6 ──→ M7 ──→ M8 ──→ M9
 | ライセンス監査結果 | GPL-free要件の充足確認 |
 | `campplus.onnx` (28MB) | CAM++ Speaker Encoder |
 | `wespeaker-resnet293.onnx` | 評価用cross-encoder |
-| ダウンロード済みデータセット | LibriTTS-R, JVS |
 
 ---
 
@@ -485,35 +483,43 @@ CAM++ ONNXモデルを使ったオフラインSpeaker Embedding抽出ツール�
 
 ---
 
-## M5: データ準備・統合
+## M5: データ準備スクリプト実装
 
 ### 概要
 
-LibriTTS-R, JVS, moe-speech-20speakers-v2 の3コーパスを統合し、zero-shot学習用データセットを作成する。
+LibriTTS-R, JVS, moe-speech-20speakers-v2 の3コーパスを統合するためのデータ前処理・統合スクリプトを実装する。実際のデータダウンロードと前処理実行は本マイルストーンのスコープ外とし、学習開始前に別途行う。
+
+### 新規ファイル
+
+| ファイル | 規模 | 説明 |
+|---------|------|------|
+| `src/python/piper_train/prepare_zero_shot_dataset.py` | ~300行 | データ前処理・統合スクリプト |
+| `test/test_prepare_zero_shot_dataset.py` | ~100行 | 単体テスト |
 
 ### タスク
 
-#### 前処理
+#### 前処理スクリプト実装
 
-- [ ] サンプリングレート統一:
+- [ ] サンプリングレート変換機能:
   - LibriTTS-R: 24kHz → 22050Hz
   - JVS: 24kHz → 22050Hz
-  - moe-speech-20speakers-v2: 22050Hz (そのまま)
-- [ ] 英語データ音素化: LibriTTS-R テキストを `EnglishPhonemizer` (g2p-en) で変換
-- [ ] 日本語データ音素化: JVS テキストを `JapanesePhonemizer` で変換
+  - moe-speech-20speakers-v2: 22050Hz (パススルー)
+- [ ] 英語データ音素化: `EnglishPhonemizer` (g2p-en) 経由
+- [ ] 日本語データ音素化: `JapanesePhonemizer` 経由
 - [ ] prosody_features 生成: 日本語は OpenJTalk 経由、英語は prosody_features=None (ゼロ入力)
+- [ ] `__main__` エントリーポイント: `python -m piper_train.prepare_zero_shot_dataset` で実行可能
 
-#### Speaker ID・Embedding
+#### Speaker ID 割り当てロジック
 
-- [ ] Speaker ID 割り当て:
+- [ ] コーパスごとの ID レンジ管理:
   - moe-speech: 0-19
   - JVS: 20-119
   - LibriTTS-R: 120-2575
-- [ ] M4ツールで全2,576話者のembeddingを抽出 → `speaker_embeddings/speaker_N.npy`
+- [ ] M4ツール連携: 全話者のembedding一括抽出呼び出し
 
-#### 統合
+#### 統合 JSONL 生成ロジック
 
-- [ ] 統合 JSONL 作成:
+- [ ] 出力フォーマット:
   ```json
   {
     "phoneme_ids": [1, 8, 5, ...],
@@ -523,40 +529,58 @@ LibriTTS-R, JVS, moe-speech-20speakers-v2 の3コーパスを統合し、zero-sh
     "language": "ja"
   }
   ```
-- [ ] `config.json` 作成: `num_speakers: 2576`, 全言語統合 `phoneme_id_map`
-- [ ] spectrogram/audio_norm の前処理実行
+- [ ] `config.json` 生成: `num_speakers`, 全言語統合 `phoneme_id_map`
+- [ ] spectrogram/audio_norm の前処理パイプライン
 
-#### 検証
+#### 検証機能実装
 
-- [ ] JSONL 全エントリで参照先ファイル (audio, spec, speaker_embedding) の存在確認
-- [ ] phoneme_id_map の日英 ID 衝突チェック (Phonemizerレジストリが独立管理のため原理的に衝突しないが、念のため検証)
-- [ ] ランダムサンプリングによる音声品質確認
+- [ ] `--validate` オプション: JSONL全エントリで参照先ファイルの存在確認
+- [ ] phoneme_id_map の日英 ID 衝突チェック
+- [ ] ランダムサンプリングによる音声品質チェック機能
+
+#### CLI インターフェース
+
+- [ ] 引数:
+  - `--libritts-dir`: LibriTTS-R ディレクトリ
+  - `--jvs-dir`: JVS ディレクトリ
+  - `--moe-speech-dir`: moe-speech データセットディレクトリ
+  - `--output-dir`: 出力先
+  - `--encoder`: CAM++ ONNXモデルパス (embedding抽出用)
+  - `--workers`: 並列処理数 (default: 4)
+  - `--validate`: 生成後の検証を実行
+
+#### テスト
+
+- [ ] サンプリングレート変換の単体テスト
+- [ ] JSONL生成フォーマットの検証テスト
+- [ ] Speaker ID割り当てロジックのテスト
+- [ ] `config.json` 生成の検証テスト
+- [ ] 小規模ダミーデータでのE2Eテスト
 
 ### 受入基準
 
-1. `/data/piper/dataset-zero-shot-merged/dataset.jsonl` が存在し 60,000+ エントリ
-2. 各エントリに `phoneme_ids`, `speaker_id`, `speaker_embedding_path`, `language` が含まれる
-3. `speaker_embeddings/` に 2,576 個の `.npy` ファイル (全て shape `(192,)`)
-4. `config.json` の `num_speakers` が 2576
-5. ランダム10エントリの audio/spec が正常に読み込み可能
+1. `python -m piper_train.prepare_zero_shot_dataset --help` が全引数を表示
+2. 小規模ダミーデータ (各コーパス3ファイル) でE2Eテストが成功
+3. 生成される JSONL の各エントリに `phoneme_ids`, `speaker_id`, `speaker_embedding_path`, `language` が含まれる
+4. `config.json` の `num_speakers` が正しく計算される
+5. `--validate` オプションで参照先ファイルの存在確認が動作
+6. 全テストがパス
 
 ### 依存関係
 
-- M0 (データセット取得済み)
 - M4 (Speaker Embedding抽出ツール完成)
 
 ### 想定工数
 
-- 2日
+- 1.5日
 
 ### リスクと対策
 
 | リスク | 影響度 | 対策 |
 |--------|--------|------|
-| LibriTTS-R (585h) の前処理に長時間 | 中 | multiprocessing で並列化。GPU 1台を前処理に割り当て |
 | 英語 prosody_features が未対応 | 低 | prosody_features=None → ゼロ入力 (models.pyの既存ロジックで対処) |
-| JVS 短発話のembedding品質低下 | 低 | 3秒未満の発話をembedding抽出対象から除外。複数発話平均化で品質担保 |
-| phoneme_id_map の日英統合でID衝突 | 低 | 言語別Phonemizerが独立管理のため原理的に衝突しない。統合後に重複チェック |
+| phoneme_id_map の日英統合でID衝突 | 低 | 言語別Phonemizerが独立管理のため原理的に衝突しない。テストで重複チェック |
+| 各コーパスのディレクトリ構造の違い | 中 | コーパスごとにパーサーを分離し、共通インターフェースで統合 |
 
 ---
 
@@ -601,7 +625,9 @@ CAM++ Speaker Encoder を凍結した状態で VITS 本体を学習する (100K 
 
 ### 依存関係
 
-- M1, M2, M3, M5 の全完了
+- M1, M2, M3, M5 の全完了 (コード実装)
+- データセット準備完了 (M5スクリプトの実行: データダウンロード → 前処理 → 統合)
+- L4 GPU x4 の利用可能性確認
 
 ### 想定工数
 
@@ -817,7 +843,7 @@ CAM++ Speaker Encoder を解凍し、VITS 本体と joint training (200K iterati
 | R1 | **gin_channels不一致 (512 vs 768)** | 高 | 高 | **最高** | `use_zero_shot=True` 時に768強制。3箇所のフォールバック値をテストで検証 | M1 |
 | R2 | **Phase切り替え時のoptimizer state不整合** | 高 | 中 | **高** | Phase 1/2を別training runとして実行。重みのみロード + 新規optimizer | M6, M7 |
 | R3 | FP16とCAM++の相互作用 | 中 | 中 | 中 | WavLMパターンに倣い `audio.float()` で明示的にfloat32変換 | M2 |
-| R4 | 大規模データセット(715h)の前処理時間 | 中 | 高 | 中 | multiprocessing並列化。スモールセットで事前検証 | M5 |
+| R4 | 大規模データセット(715h)の前処理時間 | 中 | 高 | 中 | multiprocessing並列化。スモールセットで事前検証。実装時にダミーデータでE2Eテスト済み | M5実行時 |
 | R5 | 既存チェックポイントからのfine-tuning不能 | 中 | 中 | 中 | zero-shotモデルはスクラッチ学習。Generator/Encoder/Flowは `strict=False` で引き継ぎ可能 | M6 |
 | R6 | マルチGPU (DDP) でのCAM++重み同期 | 低 | 中 | 低-中 | `find_unused_parameters=True` は既に設定済み (`__main__.py` L56) | M6, M7 |
 | R7 | CAM++ Fbank仕様の不一致 | 高 | 低 | 中 | WeSpeaker/3D-Speaker公式コードから正確に転記。sherpa-onnx実装とクロスチェック | M4 |
