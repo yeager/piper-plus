@@ -124,6 +124,41 @@ def main():
         default=2e-4,
         help="Base learning rate for single GPU training",
     )
+    # Zero-Shot TTS arguments
+    parser.add_argument(
+        "--zero-shot",
+        action="store_true",
+        help="Enable zero-shot TTS mode (use speaker embeddings instead of speaker IDs)",
+    )
+    parser.add_argument(
+        "--spk-embed-dim",
+        type=int,
+        default=192,
+        help="Speaker embedding dimension (default: 192 for CAM++)",
+    )
+    parser.add_argument(
+        "--c-spk",
+        type=float,
+        default=9.0,
+        help="Speaker consistency loss weight (default: 9.0)",
+    )
+    parser.add_argument(
+        "--c-dino",
+        type=float,
+        default=0.1,
+        help="DINO self-distillation loss weight (default: 0.1)",
+    )
+    parser.add_argument(
+        "--speaker-encoder-path",
+        default=None,
+        help="Path to speaker encoder ONNX model for SCL monitoring (optional)",
+    )
+    parser.add_argument(
+        "--freeze-speaker-encoder-steps",
+        type=int,
+        default=100000,
+        help="Number of steps to freeze speaker encoder (Phase 1). Default: 100000",
+    )
     # WavLM Discriminator arguments (always enabled by default for improved audio quality)
     parser.add_argument(
         "--wavlm-model-name",
@@ -202,6 +237,13 @@ def main():
     _LOGGER.info(
         f"WavLM Discriminator enabled: model={args.wavlm_model_name}, weight={args.c_wavlm}"
     )
+
+    # Log Zero-Shot TTS status
+    if getattr(args, "zero_shot", False):
+        _LOGGER.info(
+            "Zero-Shot TTS: spk_embed_dim=%d, c_spk=%.1f, c_dino=%.2f",
+            args.spk_embed_dim, args.c_spk, args.c_dino,
+        )
 
     # Initialize scaled_lr
     scaled_lr = args.base_lr
@@ -326,6 +368,16 @@ def main():
         dict_args["upsample_rates"] = (8, 8, 2, 2)
         dict_args["upsample_initial_channel"] = 512
         dict_args["upsample_kernel_sizes"] = (16, 16, 4, 4)
+
+    # Zero-Shot TTS: argparse の zero_shot を use_zero_shot に変換
+    if dict_args.pop("zero_shot", False):
+        dict_args["use_zero_shot"] = True
+        # Zero-Shot モードでは gin_channels=768 を強制
+        dict_args["gin_channels"] = 768
+        _LOGGER.info(
+            "Zero-Shot TTS mode enabled: gin_channels=768, spk_embed_dim=%d",
+            dict_args.get("spk_embed_dim", 192),
+        )
 
     # マルチスピーカーモデルの場合、gin_channelsを768に設定（品質向上のため）
     if num_speakers > 1 and "gin_channels" not in dict_args:

@@ -81,6 +81,10 @@ class VitsModel(pl.LightningModule):
         # Zero-shot TTS
         use_zero_shot: bool = False,
         spk_embed_dim: int = 192,
+        c_spk: float = 9.0,
+        c_dino: float = 0.1,
+        speaker_encoder_path: str | None = None,
+        freeze_speaker_encoder_steps: int = 100000,
         # WavLM Discriminator (enabled by default for improved audio quality)
         use_wavlm_discriminator: bool = True,
         wavlm_model_name: str = "microsoft/wavlm-base-plus",
@@ -99,6 +103,10 @@ class VitsModel(pl.LightningModule):
             gin_channels = 512
 
         self.save_hyperparameters()
+
+        # DINO center buffer for zero-shot training
+        if use_zero_shot:
+            self.register_buffer("dino_center", torch.zeros(spk_embed_dim))
 
         # Set up models
         self.model_g = SynthesizerTrn(
@@ -170,7 +178,7 @@ class VitsModel(pl.LightningModule):
             full_dataset, [train_set_size, num_test_examples, valid_set_size]
         )
 
-    def forward(self, text, text_lengths, scales, sid=None, prosody_features=None):
+    def forward(self, text, text_lengths, scales, sid=None, prosody_features=None, speaker_embedding=None):
         noise_scale = scales[0]
         length_scale = scales[1]
         noise_scale_w = scales[2]
@@ -182,6 +190,7 @@ class VitsModel(pl.LightningModule):
             noise_scale_w=noise_scale_w,
             sid=sid,
             prosody_features=prosody_features,
+            speaker_embedding=speaker_embedding,
         )
 
         return audio
@@ -202,7 +211,7 @@ class VitsModel(pl.LightningModule):
         pin_memory = not getattr(self.hparams, "no_pin_memory", False)
 
         collate_fn = UtteranceCollate(
-            is_multispeaker=self.hparams.num_speakers > 1,
+            is_multispeaker=self.hparams.num_speakers > 1 or self.hparams.use_zero_shot,
             segment_size=self.hparams.segment_size,
         )
 
@@ -251,7 +260,7 @@ class VitsModel(pl.LightningModule):
         return DataLoader(
             self._val_dataset,
             collate_fn=UtteranceCollate(
-                is_multispeaker=self.hparams.num_speakers > 1,
+                is_multispeaker=self.hparams.num_speakers > 1 or self.hparams.use_zero_shot,
                 segment_size=self.hparams.segment_size,
             ),
             num_workers=self.hparams.num_workers,
@@ -266,7 +275,7 @@ class VitsModel(pl.LightningModule):
         return DataLoader(
             self._test_dataset,
             collate_fn=UtteranceCollate(
-                is_multispeaker=self.hparams.num_speakers > 1,
+                is_multispeaker=self.hparams.num_speakers > 1 or self.hparams.use_zero_shot,
                 segment_size=self.hparams.segment_size,
             ),
             num_workers=self.hparams.num_workers,
@@ -325,6 +334,7 @@ class VitsModel(pl.LightningModule):
             batch.speaker_ids if batch.speaker_ids is not None else None,
             batch.prosody_features if batch.prosody_features is not None else None,
         )
+        speaker_embeddings = batch.speaker_embeddings if batch.speaker_embeddings is not None else None
         (
             y_hat,
             l_length,
@@ -340,6 +350,7 @@ class VitsModel(pl.LightningModule):
             spec_lengths,
             speaker_ids,
             prosody_features=prosody_features,
+            speaker_embedding=speaker_embeddings,
         )
         self._y_hat = y_hat.contiguous()
 
@@ -454,7 +465,11 @@ class VitsModel(pl.LightningModule):
                 if test_utt.speaker_id is not None
                 else None
             )
-            test_audio = self(text, text_lengths, scales, sid=sid).detach()
+            # Zero-shot mode: use a default zero embedding for validation
+            spk_emb = None
+            if self.hparams.use_zero_shot:
+                spk_emb = torch.zeros(1, self.hparams.spk_embed_dim, device=self.device)
+            test_audio = self(text, text_lengths, scales, sid=sid, speaker_embedding=spk_emb).detach()
 
             # Scale to make louder in [-1, 1]
             test_audio = test_audio * (1.0 / max(0.01, abs(test_audio.max())))

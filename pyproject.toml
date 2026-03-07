@@ -201,6 +201,8 @@ inline-quotes = "double"
 # preprocess.py: 条件付きインポートで警告を抑制
 "src/python/piper_train/preprocess.py" = ["PLC0415"]
 "src/python/piper_train/phonemize/english.py" = ["PLC0415"]
+# dataset.py: lazy import of numpy inside __getitem__ for optional speaker embedding
+"src/python/piper_train/vits/dataset.py" = ["PLC0415"]
 # prepare scripts: 条件付きインポートを許可
 "src/python/prepare_*.py" = ["PLC0415"]
 # runtime files: 条件付きインポートを許可

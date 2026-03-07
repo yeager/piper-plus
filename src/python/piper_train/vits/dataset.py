@@ -35,6 +35,7 @@ class Utterance:
     speaker_id: int | None = None
     text: str | None = None
     prosody_features: list[dict | None] | None = None  # A1/A2/A3 per phoneme
+    speaker_embedding_path: Path | None = None
 
 
 @dataclass
@@ -45,6 +46,7 @@ class UtteranceTensors:
     speaker_id: LongTensor | None = None
     text: str | None = None
     prosody_features: LongTensor | None = None  # Shape: (num_phonemes, 3) for A1/A2/A3
+    speaker_embedding: FloatTensor | None = None
 
     @property
     def spec_length(self) -> int:
@@ -61,6 +63,7 @@ class Batch:
     audio_lengths: LongTensor
     speaker_ids: LongTensor | None = None
     prosody_features: LongTensor | None = None  # Shape: (batch, max_phonemes, 3)
+    speaker_embeddings: FloatTensor | None = None
 
 
 class PiperDataset(Dataset):
@@ -109,6 +112,13 @@ class PiperDataset(Dataset):
                         utt.prosody_features
                     )
 
+                # Load speaker embedding from .npy file if available
+                speaker_embedding_tensor = None
+                if utt.speaker_embedding_path is not None:
+                    import numpy as np
+                    spk_emb = np.load(utt.speaker_embedding_path).astype(np.float32)
+                    speaker_embedding_tensor = torch.from_numpy(spk_emb)
+
                 return UtteranceTensors(
                     phoneme_ids=LongTensor(utt.phoneme_ids),
                     audio_norm=audio_norm,
@@ -120,6 +130,7 @@ class PiperDataset(Dataset):
                     ),
                     text=utt.text,
                     prosody_features=prosody_tensor,
+                    speaker_embedding=speaker_embedding_tensor,
                 )
             except Exception as e:
                 _LOGGER.error(
@@ -214,6 +225,7 @@ class PiperDataset(Dataset):
             if not audio_spec_path.is_absolute():
                 audio_spec_path = dataset_dir / audio_spec_path
 
+        spk_emb_path = utt_dict.get("speaker_embedding_path")
         return Utterance(
             phoneme_ids=utt_dict["phoneme_ids"],
             audio_norm_path=audio_norm_path,
@@ -221,6 +233,7 @@ class PiperDataset(Dataset):
             speaker_id=utt_dict.get("speaker_id"),
             text=utt_dict.get("text"),
             prosody_features=utt_dict.get("prosody_features"),
+            speaker_embedding_path=Path(spk_emb_path) if spk_emb_path else None,
         )
 
 
@@ -239,6 +252,7 @@ class UtteranceCollate:
 
         num_mels = 0
         has_prosody = False
+        has_speaker_embedding = False
 
         # Determine lengths
         for _utt_idx, utt in enumerate(utterances):
@@ -259,6 +273,9 @@ class UtteranceCollate:
 
             if utt.prosody_features is not None:
                 has_prosody = True
+
+            if utt.speaker_embedding is not None:
+                has_speaker_embedding = True
 
         # Audio cannot be smaller than segment size (8192)
         max_audio_length = max(max_audio_length, self.segment_size)
@@ -316,6 +333,23 @@ class UtteranceCollate:
                         :prosody_length
                     ]
 
+        # Stack speaker embeddings (固定長のためパディング不要)
+        speaker_embeddings: FloatTensor | None = None
+        if has_speaker_embedding:
+            emb_list = []
+            for utt in sorted_utterances:
+                if utt.speaker_embedding is not None:
+                    emb_list.append(utt.speaker_embedding)
+                else:
+                    # Fallback: zero embedding if some utterances don't have it
+                    emb_dim = next(
+                        u.speaker_embedding.size(-1)
+                        for u in sorted_utterances
+                        if u.speaker_embedding is not None
+                    )
+                    emb_list.append(torch.zeros(emb_dim))
+            speaker_embeddings = torch.stack(emb_list)
+
         return Batch(
             phoneme_ids=phonemes_padded,
             phoneme_lengths=phoneme_lengths,
@@ -325,6 +359,7 @@ class UtteranceCollate:
             audio_lengths=audio_lengths,
             speaker_ids=speaker_ids,
             prosody_features=prosody_padded,
+            speaker_embeddings=speaker_embeddings,
         )
 
 

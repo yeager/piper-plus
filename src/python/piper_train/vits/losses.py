@@ -1,4 +1,5 @@
 import torch
+from torch.nn import functional as F
 
 
 def feature_loss(fmap_r, fmap_g):
@@ -56,3 +57,47 @@ def kl_loss(z_p, logs_q, m_p, logs_p, z_mask):
     kl = torch.sum(kl * z_mask)
     l_kl = kl / torch.sum(z_mask)
     return l_kl
+
+
+def speaker_consistency_loss(gen_embedding, ref_embedding):
+    """Speaker Consistency Loss (SCL) — コサイン類似度ベースの話者一貫性損失
+
+    Parameters
+    ----------
+    gen_embedding : torch.Tensor
+        生成音声から抽出した話者埋め込み [B, D]
+    ref_embedding : torch.Tensor
+        参照音声の話者埋め込み [B, D]
+
+    Returns
+    -------
+    torch.Tensor
+        スカラー損失値 (範囲: 0-2, 0が完全一致)
+    """
+    return 1.0 - F.cosine_similarity(gen_embedding, ref_embedding, dim=-1).mean()
+
+
+def dino_loss(student_emb, teacher_emb, center, tau_s=0.1, tau_t=0.04):
+    """DINO自己蒸留損失 — 話者埋め込み空間の正則化
+
+    Parameters
+    ----------
+    student_emb : torch.Tensor
+        学生ネットワーク出力 [B, D]
+    teacher_emb : torch.Tensor
+        教師ネットワーク出力 [B, D] (通常は detach 済み)
+    center : torch.Tensor
+        EMA センター [D]
+    tau_s : float
+        学生温度パラメータ (default: 0.1)
+    tau_t : float
+        教師温度パラメータ (default: 0.04)
+
+    Returns
+    -------
+    torch.Tensor
+        スカラー損失値 (正の値)
+    """
+    student_out = F.log_softmax(student_emb / tau_s, dim=-1)
+    teacher_out = F.softmax((teacher_emb - center) / tau_t, dim=-1)
+    return -(teacher_out * student_out).sum(dim=-1).mean()
