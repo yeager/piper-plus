@@ -382,26 +382,29 @@ CAM++ ONNXモデルを使ったオフラインSpeaker Embedding抽出ツール�
 
 ### タスク
 
-- [ ] CLI インターフェース:
+- [x] CLI インターフェース:
   - `--encoder`: CAM++ ONNXモデルパス (必須)
   - `--audio`: 単一WAVファイル
   - `--audio-dir`: ディレクトリ (全WAVを平均化)
   - `--dataset-dir`: データセット (全話者一括)
   - `--output` / `--output-dir`: 出力先
-  - `--workers`: 並列処理数 (default: 4)
-- [ ] 処理フロー:
-  1. WAV → 16kHz リサンプリング (`torchaudio.transforms.Resample`)
+  - `--workers`: 並列処理数 (default: 4, 将来の並列化用)
+  - `--max-utterances`, `--min-duration`, `--source-sample-rate`
+- [x] 処理フロー:
+  1. WAV → 16kHz リサンプリング (`torchaudio.functional.resample`)
   2. 80-dim Fbank特徴抽出 (25ms窓, 10msホップ, `torchaudio.compliance.kaldi.fbank`)
-  3. CAM++ ONNX推論 → 192-dim embedding
-  4. L2正規化: `emb = emb / np.linalg.norm(emb)`
-  5. 複数ファイル: 平均化 → 再正規化
-  6. `.npy` 保存
-- [ ] `__main__` エントリーポイント: `python -m piper_train.extract_speaker_embedding` で実行可能
-- [ ] Fbank抽出の仕様を WeSpeaker/3D-Speaker 公式コードから正確に転記
-  - sherpa-onnx の実装も参考
-- [ ] データセットモード: `dataset.jsonl` を読み込み、`speaker_id` ごとにグループ化
-  - 3秒未満の発話はスキップ
-  - 各話者最大10件の代表発話から平均化
+  3. utterance-level CMVN正規化
+  4. CAM++ ONNX推論 → 192-dim embedding
+  5. L2正規化: `emb = emb / np.linalg.norm(emb)`
+  6. 複数ファイル: 平均化 → 再正規化
+  7. `.npy` 保存
+- [x] `__main__` エントリーポイント: `python -m piper_train.extract_speaker_embedding` で実行可能
+- [x] Fbank抽出: kaldi互換 80-dim, ステレオ→モノラル変換対応
+- [x] データセットモード: `dataset.jsonl` を読み込み、`speaker_id` ごとにグループ化
+  - `--min-duration` (default: 3秒) 未満の発話はスキップ
+  - `--max-utterances` (default: 10) 件の代表発話から平均化
+  - `.pt` ファイル (audio_norm) からの直接読み込み対応
+- [x] テスト: 9テスト (前処理3, L2正規化3, CLI/npy3)
 
 ### 受入基準
 
