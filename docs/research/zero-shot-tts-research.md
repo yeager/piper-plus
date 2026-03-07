@@ -43,11 +43,11 @@ Piperにzero-shot話者再現を導入するための最終推奨アプローチ
 
 ### 推奨ロードマップ
 
-| フェーズ | 内容 | 工数 |
-|---------|------|------|
-| Phase 1 | ECAPA-TDNN Speaker Encoder + DINO/SCL Loss 導入 | 5-7日 + 学習180-240h |
-| Phase 2 | TextEncoder Speaker Conditioning追加 (VITS2方式) | 1-2日 + 再学習 |
-| Phase 3 | MB-iSTFT-VITS デコーダ高速化 (オプション) | 3-5日 + 再学習 |
+| フェーズ | 内容 | 工数 | 状態 |
+|---------|------|------|------|
+| Phase 1 | CAM++ Speaker Encoder + DINO/SCL Loss 導入 | 実装~6日 + 学習190-250h | M0-M4 実装完了 |
+| Phase 2 | TextEncoder Speaker Conditioning追加 (VITS2方式) | 1-2日 + 再学習 | 未着手 |
+| Phase 3 | MB-iSTFT-VITS デコーダ高速化 (オプション) | 3-5日 + 再学習 | 未着手 |
 | 将来 | アーキテクチャ刷新 (Flow Matching等) | 大規模 |
 
 ---

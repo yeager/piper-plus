@@ -1,7 +1,9 @@
 # Zero-Shot TTS 実装計画書
 
 **作成日**: 2026-03-07
-**ブランチ**: `docs/zero-shot-tts-research`
+**最終更新**: 2026-03-08
+**ブランチ**: `feat/zero-shot-tts`
+**実装状態**: M0-M4 完了 (M5 未着手)
 **前提ドキュメント**: [zero-shot-tts-research.md](./zero-shot-tts-research.md)
 
 ---
@@ -273,8 +275,11 @@ g [B, gin_channels, 1]
 | `export_onnx.py` | 修正 | ~30行 | speaker_embedding入力対応 |
 | `infer_onnx.py` | 修正 | ~40行 | --speaker-embedding オプション追加 |
 | `__main__.py` | 修正 | ~15行 | --zero-shot CLI引数追加 |
-| **`extract_speaker_embedding.py`** | **新規** | **~150行** | **オフラインembedding抽出ツール** |
-| **`test/test_zero_shot.py`** | **新規** | **~120行** | **zero-shot機能テスト** |
+| **`extract_speaker_embedding.py`** | **新規** | **~280行** | **オフラインembedding抽出ツール** |
+| `src/python/tests/test_zero_shot.py` | 新規 | ~360行 | M1: dual-modeテスト (15テスト) |
+| `src/python/tests/test_m2_training_pipeline.py` | 新規 | ~180行 | M2: SCL/DINO/Datasetテスト (12テスト) |
+| `src/python/tests/test_m3_inference_pipeline.py` | 新規 | ~410行 | M3: ONNX export/inferテスト (5テスト) |
+| `src/python/tests/test_m4_extract_speaker_embedding.py` | 新規 | ~170行 | M4: 抽出ツールテスト (9テスト) |
 
 ### 5.2 models.py — SynthesizerTrn
 
@@ -304,9 +309,12 @@ def forward(self, x, x_lengths, y, y_lengths, sid=None,
             speaker_embedding=None):  # NEW
     ...
     # 変更: g ベクトルの生成
-    if self.use_zero_shot and speaker_embedding is not None:
+    if self.use_zero_shot:
+        if speaker_embedding is None:
+            raise ValueError("speaker_embedding is required when use_zero_shot=True")
         g = self.spk_proj(speaker_embedding).unsqueeze(-1)  # [B, gin_channels, 1]
-    elif self.n_speakers > 1 and sid is not None:
+    elif self.n_speakers > 1:
+        assert sid is not None, "Missing speaker id"
         g = self.emb_g(sid).unsqueeze(-1)
     else:
         g = None
@@ -318,6 +326,12 @@ def forward(self, x, x_lengths, y, y_lengths, sid=None,
 `forward` と同様の変更を適用。
 
 ### 5.3 lightning.py — 学習ループ
+
+> **実装状態 (2026-03-08)**: PyTorch版CAM++の統合は保留中。現在のlightning.pyには
+> `c_spk`, `c_dino`, `speaker_encoder_path`, `freeze_speaker_encoder_steps` パラメータ、
+> `dino_center` バッファ、および `training_step_g` でのspeaker_embedding受け渡しが実装済み。
+> SCL/DINO損失関数は `losses.py` に定義済みだが、training_step_g への統合は
+> PyTorch Speaker Encoder (または `onnx2torch` 変換) 完了後に実施予定。
 
 #### CAM++ Speaker Encoder の読み込み
 
@@ -406,8 +420,8 @@ def dino_loss(student_emb, teacher_emb, center, tau_s=0.1, tau_t=0.04):
 
 ```python
 # infer_forward 関数内
-def infer_forward(text, text_lengths, scales, speaker_embedding=None,
-                  sid=None, prosody_features=None):
+def infer_forward(text, text_lengths, scales, sid=None,
+                  prosody_features=None, speaker_embedding=None):
     ...
     if use_zero_shot and speaker_embedding is not None:
         g = model_g.spk_proj(speaker_embedding).unsqueeze(-1)
@@ -818,6 +832,16 @@ uv run python -m piper_train.infer_onnx \
 | **Train-2** | Phase 2学習 (CAM++解凍 + DINO + SCL) | - | ~130-170h |
 | **Eval** | 評価パイプライン実行 + 結果分析 | 1日 | - |
 | **合計** | | **~8日** | **~190-250h** |
+
+#### 実績 (2026-03-08)
+
+| Phase | 内容 | 実績 |
+|-------|------|------|
+| **Impl-1** (M1) | models.py / config.py 変更 + 単体テスト | ✅ 完了 (15テスト) |
+| **Impl-2** (M2) | lightning.py / losses.py / dataset.py / __main__.py | ✅ 完了 (12テスト、SCL/DINO統合は保留) |
+| **Impl-3** (M3) | export_onnx.py / infer_onnx.py 変更 | ✅ 完了 (5テスト) |
+| **Impl-4** (M4) | extract_speaker_embedding.py 新規作成 | ✅ 完了 (9テスト) |
+| **Impl-5** (M5) | データ準備スクリプト | 未着手 |
 
 ### 12.2 前提条件
 

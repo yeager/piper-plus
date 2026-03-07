@@ -42,10 +42,32 @@
 | 項目 | 値 |
 |------|-----|
 | 変更ファイル数 | 8ファイル (修正) + 4ファイル (新規) |
-| 追加コード量 | ~1,100行 (コア) + ~300行 (テスト) |
+| 追加コード量 (見積) | ~1,100行 (コア) + ~300行 (テスト) |
+| 追加コード量 (実績 M0-M4) | ~1,400行 (コア) + ~750行 (テスト) |
 | 実装工数 (M0-M5) | ~6日 |
 | GPU計算時間 (M6-M7) | ~190-250時間 (L4 x4) |
 | 全体所要期間 | 実装 ~1週間 + 学習・評価 ~3-5週間 |
+
+### 実装進捗 (2026-03-08 更新)
+
+| マイルストーン | 状態 | テスト数 | コミット |
+|-------------|------|---------|---------|
+| M0: 環境準備 | ✅ 完了 | — | `28c4027` |
+| M1: コアモデル変更 | ✅ 完了 | 15 | `ac1f870`, `520a3fe` |
+| M2: 学習パイプライン | ✅ 完了 | 12 | `e5887e9` |
+| M3: 推論パイプライン | ✅ 完了 | 5 (3 skip) | `a164628` |
+| M4: Speaker Embedding抽出 | ✅ 完了 | 9 | `72c9970` |
+| M5: データ準備スクリプト | 未着手 | — | — |
+| M6-M9: 学習・評価・リリース | 未着手 | — | — |
+
+**テスト合計**: 41 passed, 5 skipped (GPU/onnxscript依存)
+
+**実装スコープ (M0-M5) 進捗**: 5/6 完了
+
+#### 保留事項
+- **SCL/DINO損失のtraining_step_g統合**: PyTorch Speaker Encoder統合時に有効化予定（損失関数は定義済み）
+- **Phase切り替え・configure_optimizers**: 同上
+- `onnx2torch` によるONNX→PyTorch変換で対応可能（追加依存1パッケージ）
 
 ---
 
@@ -169,7 +191,7 @@ VITSの `SynthesizerTrn` にzero-shot対応の `spk_proj` (Linear射影層) を�
 - [x] **models.py** — `SynthesizerTrn.forward`: `speaker_embedding` 引数追加、g生成分岐
 - [x] **models.py** — `SynthesizerTrn.infer`: 同等の変更
 - [x] **gin_channels統一ガード**: config.py, lightning.py でzero-shot時768を強制
-- [x] **単体テスト** `test_zero_shot.py`: 10テスト全パス (init 5, forward 2, infer 3)
+- [x] **単体テスト** `test_zero_shot.py`: 15テスト全パス (init 6, forward 4, infer 5)
 
 ### 受入基準
 
@@ -211,6 +233,7 @@ VITSの `SynthesizerTrn` にzero-shot対応の `spk_proj` (Linear射影層) を�
 | `src/python/piper_train/vits/lightning.py` | 修正 | ~80行 | CAM++統合, SCL/DINO, Phase切り替え |
 | `src/python/piper_train/vits/dataset.py` | 修正 | ~20行 | speaker_embedding読み込み |
 | `src/python/piper_train/__main__.py` | 修正 | ~15行 | CLI引数追加 |
+| `src/python/tests/test_m2_training_pipeline.py` | 新規 | ~180行 | SCL/DINO/Dataset/regressionテスト |
 
 ### タスク
 
@@ -315,6 +338,7 @@ ONNXエクスポートで `sid` 入力を `speaker_embedding` 入力に置換し
 |---------|---------|---------|---------|
 | `src/python/piper_train/export_onnx.py` | 修正 | ~30行 | `infer_forward`, 入力定義 |
 | `src/python/piper_train/infer_onnx.py` | 修正 | ~40行 | CLI引数, 入力構築 |
+| `src/python/tests/test_m3_inference_pipeline.py` | 新規 | ~400行 | ONNX export/inferテスト |
 
 ### タスク
 
@@ -377,8 +401,8 @@ CAM++ ONNXモデルを使ったオフラインSpeaker Embedding抽出ツール�
 
 | ファイル | 規模 |
 |---------|------|
-| `src/python/piper_train/extract_speaker_embedding.py` | ~150行 |
-| `test/test_extract_speaker_embedding.py` | ~80行 |
+| `src/python/piper_train/extract_speaker_embedding.py` | ~280行 |
+| `src/python/tests/test_m4_extract_speaker_embedding.py` | ~170行 |
 
 ### タスク
 
