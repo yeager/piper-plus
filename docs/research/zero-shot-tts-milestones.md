@@ -116,14 +116,13 @@ M0 ──→ M1 ──→ M2 ──┐
 
 ### タスク
 
-- [ ] CAM++ 事前学習済みONNXモデルのダウンロード
-  - 入手先: sherpa-onnx (ONNX直接利用可能) or ModelScope (`iic/speech_campplus_sv_zh-cn_16k-common`)
+- [x] CAM++ 事前学習済みONNXモデルのダウンロード → `scripts/download_speaker_models.py` で取得可能
+  - 入手先: sherpa-onnx GitHub Releases (`k2-fsa/sherpa-onnx`)
   - 動作確認: 入力 80-dim Fbank @ 16kHz → 出力 192-dim embedding
-- [ ] WeSpeaker ResNet293 評価用モデルのダウンロード (`Wespeaker/wespeaker-voxceleb-resnet293-LM`)
-- [ ] ライセンス監査: CAM++ (Apache-2.0), WeSpeaker (Apache-2.0), onnxruntime (MIT), torchaudio (BSD-2) → GPL-free確認
-- [ ] 依存パッケージの確認と `pyproject.toml` の更新計画
-  - 新規 optional-dependencies グループ `[zero-shot]` の設計
-  - 必要パッケージ: `onnxruntime` (既存暗黙使用), `torchaudio` (既存WavLMで使用), `soundfile`
+- [x] WeSpeaker ResNet293 評価用モデルのダウンロード → `scripts/download_speaker_models.py` で取得可能
+- [x] ライセンス監査: 全依存がGPL-free確認済み → `docs/research/zero-shot-license-audit.md`
+- [x] 依存パッケージの確認と `pyproject.toml` の更新 → `[zero-shot]` optional-dependencies 追加済み
+  - `onnxruntime>=1.16.0`, `torchaudio>=2.0.0`, `soundfile>=0.12.0`
 - [x] featureブランチ `feat/zero-shot-tts` の作成 (`dev` ブランチから分岐)
 
 ### 受入基準

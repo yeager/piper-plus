@@ -98,6 +98,12 @@ test = [
     "types-PyYAML==6.0.12",
 ]
 
+zero-shot = [
+    "onnxruntime>=1.16.0",
+    "torchaudio>=2.0.0",
+    "soundfile>=0.12.0",
+]
+
 [[tool.uv.index]]
 name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"
