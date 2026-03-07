@@ -207,6 +207,8 @@ inline-quotes = "double"
 "src/python/piper_train/extract_speaker_embedding.py" = ["PLC0415"]
 # prepare scripts: 条件付きインポートを許可
 "src/python/prepare_*.py" = ["PLC0415"]
+# prepare_zero_shot_dataset.py: 条件付きインポートを許可
+"src/python/piper_train/prepare_zero_shot_dataset.py" = ["PLC0415"]
 # runtime files: 条件付きインポートを許可
 "src/python_run/*" = ["PLC0415"]
 # Docker test scripts: テスト関数内での条件付きインポートを許可

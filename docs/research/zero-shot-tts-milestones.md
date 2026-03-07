@@ -57,12 +57,12 @@
 | M2: 学習パイプライン | ✅ 完了 | 12 | `e5887e9` |
 | M3: 推論パイプライン | ✅ 完了 | 5 (3 skip) | `a164628` |
 | M4: Speaker Embedding抽出 | ✅ 完了 | 9 | `72c9970` |
-| M5: データ準備スクリプト | 未着手 | — | — |
+| M5: データ準備スクリプト | ✅ 完了 | 11 | — |
 | M6-M9: 学習・評価・リリース | 未着手 | — | — |
 
 **テスト合計**: 41 passed, 5 skipped (GPU/onnxscript依存)
 
-**実装スコープ (M0-M5) 進捗**: 5/6 完了
+**実装スコープ (M0-M5) 進捗**: 6/6 完了
 
 #### 保留事項
 - **SCL/DINO損失のtraining_step_g統合**: PyTorch Speaker Encoder統合時に有効化予定（損失関数は定義済み）
@@ -476,26 +476,26 @@ LibriTTS-R, JVS, moe-speech-20speakers-v2 の3コーパスを統合するため�
 
 #### 前処理スクリプト実装
 
-- [ ] サンプリングレート変換機能:
+- [x] サンプリングレート変換機能:
   - LibriTTS-R: 24kHz → 22050Hz
   - JVS: 24kHz → 22050Hz
   - moe-speech-20speakers-v2: 22050Hz (パススルー)
-- [ ] 英語データ音素化: `EnglishPhonemizer` (g2p-en) 経由
-- [ ] 日本語データ音素化: `JapanesePhonemizer` 経由
-- [ ] prosody_features 生成: 日本語は OpenJTalk 経由、英語は prosody_features=None (ゼロ入力)
-- [ ] `__main__` エントリーポイント: `python -m piper_train.prepare_zero_shot_dataset` で実行可能
+- [x] 英語データ音素化: `EnglishPhonemizer` (g2p-en) 経由
+- [x] 日本語データ音素化: `JapanesePhonemizer` 経由
+- [x] prosody_features 生成: 日本語は OpenJTalk 経由、英語は prosody_features=None (ゼロ入力)
+- [x] `__main__` エントリーポイント: `python -m piper_train.prepare_zero_shot_dataset` で実行可能
 
 #### Speaker ID 割り当てロジック
 
-- [ ] コーパスごとの ID レンジ管理:
+- [x] コーパスごとの ID レンジ管理:
   - moe-speech: 0-19
   - JVS: 20-119
   - LibriTTS-R: 120-2575
-- [ ] M4ツール連携: 全話者のembedding一括抽出呼び出し
+- [x] M4ツール連携: 全話者のembedding一括抽出呼び出し
 
 #### 統合 JSONL 生成ロジック
 
-- [ ] 出力フォーマット:
+- [x] 出力フォーマット:
   ```json
   {
     "phoneme_ids": [1, 8, 5, ...],
@@ -505,18 +505,18 @@ LibriTTS-R, JVS, moe-speech-20speakers-v2 の3コーパスを統合するため�
     "language": "ja"
   }
   ```
-- [ ] `config.json` 生成: `num_speakers`, 全言語統合 `phoneme_id_map`
-- [ ] spectrogram/audio_norm の前処理パイプライン
+- [x] `config.json` 生成: `num_speakers`, 全言語統合 `phoneme_id_map`
+- [x] spectrogram/audio_norm の前処理パイプライン
 
 #### 検証機能実装
 
-- [ ] `--validate` オプション: JSONL全エントリで参照先ファイルの存在確認
-- [ ] phoneme_id_map の日英 ID 衝突チェック
-- [ ] ランダムサンプリングによる音声品質チェック機能
+- [x] `--validate` オプション: JSONL全エントリで参照先ファイルの存在確認
+- [x] phoneme_id_map の日英 ID 衝突チェック
+- [x] ランダムサンプリングによる音声品質チェック機能
 
 #### CLI インターフェース
 
-- [ ] 引数:
+- [x] 引数:
   - `--libritts-dir`: LibriTTS-R ディレクトリ
   - `--jvs-dir`: JVS ディレクトリ
   - `--moe-speech-dir`: moe-speech データセットディレクトリ
@@ -527,11 +527,11 @@ LibriTTS-R, JVS, moe-speech-20speakers-v2 の3コーパスを統合するため�
 
 #### テスト
 
-- [ ] サンプリングレート変換の単体テスト
-- [ ] JSONL生成フォーマットの検証テスト
-- [ ] Speaker ID割り当てロジックのテスト
-- [ ] `config.json` 生成の検証テスト
-- [ ] 小規模ダミーデータでのE2Eテスト
+- [x] サンプリングレート変換の単体テスト
+- [x] JSONL生成フォーマットの検証テスト
+- [x] Speaker ID割り当てロジックのテスト
+- [x] `config.json` 生成の検証テスト
+- [x] 小規模ダミーデータでのE2Eテスト
 
 ### 受入基準
 
