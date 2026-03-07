@@ -1,7 +1,7 @@
 # Zero-Shot TTS 実装マイルストーン計画
 
 **作成日**: 2026-03-08
-**ブランチ**: `docs/zero-shot-tts-research`
+**ブランチ**: `feat/zero-shot-tts`
 **前提ドキュメント**:
 - [zero-shot-tts-research.md](./zero-shot-tts-research.md) (技術調査レポート)
 - [zero-shot-tts-implementation-plan.md](./zero-shot-tts-implementation-plan.md) (実装計画書)
@@ -116,7 +116,6 @@ M0 ──→ M1 ──→ M2 ──┐
 
 ### タスク
 
-- [ ] 20話者WavLM学習 (200epoch) の完了確認と最終モデル品質評価
 - [ ] CAM++ 事前学習済みONNXモデルのダウンロード
   - 入手先: sherpa-onnx (ONNX直接利用可能) or ModelScope (`iic/speech_campplus_sv_zh-cn_16k-common`)
   - 動作確認: 入力 80-dim Fbank @ 16kHz → 出力 192-dim embedding
@@ -125,7 +124,7 @@ M0 ──→ M1 ──→ M2 ──┐
 - [ ] 依存パッケージの確認と `pyproject.toml` の更新計画
   - 新規 optional-dependencies グループ `[zero-shot]` の設計
   - 必要パッケージ: `onnxruntime` (既存暗黙使用), `torchaudio` (既存WavLMで使用), `soundfile`
-- [ ] featureブランチ `feat/zero-shot-tts` の作成 (`dev` ブランチから分岐)
+- [x] featureブランチ `feat/zero-shot-tts` の作成 (`dev` ブランチから分岐)
 
 ### 受入基準
 
