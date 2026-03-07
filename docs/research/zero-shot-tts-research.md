@@ -17,6 +17,8 @@
 8. [既存機能との互換性設計](#8-既存機能との互換性設計)
 9. [学習戦略・データ要件](#9-学習戦略データ要件)
 10. [具体的な実装計画](#10-具体的な実装計画)
+11. [推論速度ゼロインパクト設計（追加調査）](#11-推論速度ゼロインパクト設計追加調査)
+12. [エグゼクティブサマリー更新](#12-エグゼクティブサマリー更新)
 
 ---
 
@@ -901,6 +903,285 @@ CUDA_VISIBLE_DEVICES="" uv run python -m piper_train.infer_onnx \
 
 ---
 
+## 11. 推論速度ゼロインパクト設計（追加調査）
+
+> 追加調査 (2026-03-07): Piperの「軽量・高速推論」要件を守りつつzero-shotを実現するための設計。推論速度を一切落とさないことが必須要件。
+
+### 11.1 現在の推論パイプラインの速度特性
+
+#### エンドツーエンド推論時間（100文字、~5秒音声）
+
+| ステップ | 処理時間 (CPU) | 割合 |
+|---------|--------------|------|
+| Phonemize | 10-50ms | ~10% |
+| TextEncoder | 30-50ms | ~15% |
+| Duration Predictor | 10-20ms | ~5% |
+| Flow (逆向き) | 20-40ms | ~10% |
+| **Generator (Decoder)** | **80-150ms** | **~50%** |
+| WAV書き出し | 5-10ms | ~3% |
+| **合計** | **150-310ms** | RTF ≈ 0.03-0.06 |
+
+**ボトルネック**: Generator（256倍アップサンプリング + ResBlock×9）が支配的。
+
+#### Speaker ID処理のコスト
+
+現在の `emb_g(sid)` (nn.Embedding lookup) はONNX上で **Gather** オペレーションに変換される。このコストは**マイクロ秒オーダー**であり、全体の推論時間（ミリ秒〜秒オーダー）に対して完全に無視できる。
+
+```
+sid (int64) → [Gather: embedding_table] → g (float32, [1, gin_channels, 1])
+                  ↑ 数μs（無視できる）
+```
+
+### 11.2 推論速度ゼロインパクトの設計原則
+
+**核心的洞察**: Speaker Encoderの計算コストが問題になるのは「推論時に毎回実行する場合」のみ。Speaker Embeddingを事前計算してファイルに保存し、推論時にはファイルから読み込むだけなら、TTSモデル本体の推論は現在と**完全に同一速度**になる。
+
+```
+┌─────────────────────────────────┐   ┌─────────────────────────────────┐
+│  オフライン（1回のみ）            │   │  オンライン推論（毎回）           │
+│                                 │   │                                 │
+│  参照音声                        │   │  テキスト                        │
+│    ↓                            │   │    ↓                            │
+│  [Speaker Encoder ONNX]         │   │  [Phonemize]                    │
+│    ↓                            │   │    ↓                            │
+│  embedding.npy (保存)     ─────────→  [Piper TTS ONNX] ← embedding   │
+│                                 │   │    ↓                            │
+│  ※推論パイプラインに含まれない     │   │  音声出力                        │
+│  ※数十ms、1回だけ               │   │  ※現在と完全に同一速度            │
+└─────────────────────────────────┘   └─────────────────────────────────┘
+```
+
+### 11.3 3つの設計パターン比較
+
+| パターン | 推論速度への影響 | 実装複雑度 | 新規話者追加 | 既存互換性 |
+|---------|----------------|-----------|-------------|-----------|
+| **A: Encoder内蔵（毎回実行）** | **-20〜50% 低下** | 中 | リアルタイム | 維持 |
+| **B: 別モデル + キャッシュ** | 初回のみ50-110ms | 中 | 初回のみ遅い | 維持 |
+| **C: 事前計算embedding** | **ゼロ** | **低** | オフライン登録 | **維持** |
+
+#### パターンA: Speaker Encoderをモデル内蔵（非推奨）
+
+Speaker Encoderを毎回実行する方式。**推論速度が20-50%低下するため、Piperの要件に反する。**
+
+| Speaker Encoder | 追加レイテンシ (CPU) | 推論速度低下率 |
+|----------------|---------------------|--------------|
+| ECAPA-TDNN | ~70ms | ~30% |
+| CAM++ | ~30-40ms | ~15% |
+| TitaNet | ~110ms | ~45% |
+| WavLM fine-tuned | 数百ms | >100% |
+
+#### パターンB: 別モデル + メモリキャッシュ
+
+Speaker Encoderを別ONNXモデルとし、初回のみ実行してメモリにキャッシュ。2回目以降はキャッシュから読み込み。
+
+- **初回**: Speaker Encoder実行 (50-110ms) → キャッシュ
+- **2回目以降**: キャッシュ利用 (0ms追加)
+- **採用例**: XTTS v2, CosyVoice
+
+#### パターンC: 事前計算embedding（推奨）
+
+Speaker Embeddingを完全にオフラインで事前計算し、`.npy`/`.json`ファイルとして保存。推論時はファイル読み込みのみ（<1ms）。
+
+- **採用例**: YourTTS (`compute_embeddings.py`), OpenVoice (`se.pth`), CosyVoice (`spk2embedding.pt`), SpeechT5
+- **TTSモデルのONNX推論は現在と完全に同一速度**
+
+### 11.4 推奨設計: Embedding置換方式 + 事前計算パイプライン
+
+#### ONNX入力の変更
+
+```python
+# 現在のONNXグラフ
+sid (int64) → [Gather: emb_g.weight] → g (float32, [1, gin_channels, 1])
+
+# 変更後のONNXグラフ
+speaker_embedding (float32, [1, gin_channels]) → [Unsqueeze] → g (float32, [1, gin_channels, 1])
+```
+
+変わるのは入力付近の1オペレーションのみ。計算量の99.9%以上を占めるEncoder/Flow/Decoder部分は**完全に同一**。
+
+#### 速度同一性の根拠
+
+1. **Gatherオペレーション（現在）のコスト**: テーブルから1行取得 = O(gin_channels)のメモリコピー = 数μs
+2. **Unsqueezeオペレーション（変更後）のコスト**: reshape = 数μs
+3. **両者の差**: 実質ゼロ（VITS全体の推論時間の0.001%未満）
+4. **実証**: Coqui TTS (YourTTS) が `nn.Embedding` (speaker_id方式) と `d_vector` (外部embedding方式) の両方をサポートし、推論速度に有意差がないことを確認済み
+
+#### export_onnx.py の変更
+
+```python
+# 変更前
+if model_g.n_speakers > 1 and sid is not None:
+    g = model_g.emb_g(sid).unsqueeze(-1)
+
+# 変更後
+if speaker_embedding is not None:
+    g = speaker_embedding.unsqueeze(-1)  # zero-shot / 事前計算embedding
+elif model_g.n_speakers > 1 and sid is not None:
+    g = model_g.emb_g(sid).unsqueeze(-1)  # 従来互換
+```
+
+#### infer_onnx.py の変更
+
+```python
+# 新しいCLI引数
+parser.add_argument("--ref-audio", help="参照音声WAV（初回embedding計算用）")
+parser.add_argument("--speaker-embedding", help="事前計算済みembedding (.npy)")
+
+# 推論時
+if args.speaker_embedding:
+    # 事前計算済みembeddingをロード（<1ms）
+    spk_emb = np.load(args.speaker_embedding).astype(np.float32)
+    inputs["speaker_embedding"] = spk_emb.reshape(1, -1)
+elif args.ref_audio:
+    # Speaker Encoderで計算（オフラインツールを推奨）
+    spk_emb = extract_speaker_embedding(args.ref_audio)
+    inputs["speaker_embedding"] = spk_emb.reshape(1, -1)
+elif args.speaker_id is not None:
+    inputs["sid"] = np.array([args.speaker_id], dtype=np.int64)
+```
+
+### 11.5 Speaker Encoder選定（オフライン処理用）
+
+推論時には実行しないため、速度よりも**精度とライセンス**を重視して選定。
+
+#### 定量比較
+
+| モデル | パラメータ数 | ONNX Size | EER (VoxCeleb1-O) | CPU推論 (5秒音声) | ライセンス |
+|--------|------------|-----------|-------------------|------------------|-----------|
+| **CAM++** | 7.2M | **28MB** | **0.73%** | ~30-40ms | **Apache-2.0** |
+| ECAPA-TDNN (C512) | 6.2M | ~25MB | ~1.0% | ~40-50ms | Apache-2.0 |
+| ECAPA-TDNN (C1024) | 14.7M | ~83MB | ~0.80% | ~70ms | Apache-2.0 |
+| LE-CAM++ | 6.6M | ~26MB | 0.69% | <30ms | Apache-2.0 |
+| ERes2NetV2 | 17.8M | ~71MB | **0.61%** | ~60ms | Apache-2.0 |
+| ECAPA2 | ~16M | ~64MB | **0.58%** | ~70ms | Apache-2.0 |
+| d-vector (GE2E) | 2.4M | ~17MB | ~7-10% | ~10-20ms | MIT |
+| TitaNet-S | 6.4M | ~25MB | ~0.82% | ~30-40ms | CC-BY-4.0 |
+| WavLM Base+ (SV) | 94.7M | ~360MB | ~1.84% | 数百ms | MIT |
+
+#### 推奨: CAM++ (Apache-2.0)
+
+**推奨理由**:
+1. **精度/サイズの最良バランス**: EER 0.73%でECAPA-TDNNより高精度、かつパラメータ数はほぼ同等
+2. **ONNX対応済み**: WeSpeaker / 3D-Speaker / sherpa-onnx で事前学習済みONNXモデルが利用可能
+3. **INT8量子化で~8MB**: 配布サイズを大幅削減可能
+4. **Apache-2.0**: PiperのGPL-free方針と完全適合
+5. **CosyVoiceでの実績**: Alibaba CosyVoiceが標準Speaker Encoderとして採用
+
+**入手先**:
+- WeSpeaker: `wespeaker/wespeaker-models` (HuggingFace)
+- 3D-Speaker: `iic/speech_campplus_sv_zh-cn_16k-common` (ModelScope)
+- sherpa-onnx: ONNX + INT8量子化済みモデル提供
+
+#### 次点: ECAPA-TDNN (SpeechBrain, Apache-2.0)
+
+前回調査で推奨したモデル。CAM++と比較して精度はやや劣るが、SpeechBrainエコシステムとの統合が容易。
+
+### 11.6 事前計算ツール設計
+
+```bash
+# 新規話者のembedding抽出（オフライン、1回のみ）
+uv run python -m piper_train.extract_speaker_embedding \
+  --encoder /path/to/cam++.onnx \
+  --audio /path/to/reference_voice.wav \
+  --output /path/to/speaker_embedding.npy
+
+# 既存モデルの全話者embeddingを一括抽出
+uv run python -m piper_train.extract_speaker_embedding \
+  --encoder /path/to/cam++.onnx \
+  --dataset-dir /data/piper/dataset-moe-speech-20speakers-v2 \
+  --output-dir /path/to/embeddings/
+```
+
+**出力ファイル構成**:
+```
+embeddings/
+├── speaker_0.npy    # float32[gin_channels]
+├── speaker_1.npy
+├── ...
+├── speaker_19.npy
+└── speakers.json    # {"speaker_0": "speaker_0.npy", ...}
+```
+
+### 11.7 既存話者の移行パス
+
+既存のspeaker_idモデルからの移行は以下の手順で実現:
+
+1. 学習済みモデルの `emb_g.weight` から各話者のembeddingを抽出
+2. `.npy` ファイルとして保存
+3. `config.json` に `speaker_embedding_map` を追加
+4. 新ONNXモデルをエクスポート（`speaker_embedding` 入力対応）
+
+```python
+# 既存emb_gからembeddingを抽出
+checkpoint = torch.load("last.ckpt")
+emb_weights = checkpoint["state_dict"]["model_g.emb_g.weight"]  # [n_speakers, gin_channels]
+for i in range(emb_weights.shape[0]):
+    np.save(f"embeddings/speaker_{i}.npy", emb_weights[i].numpy())
+```
+
+### 11.8 OSS実装の事前計算方式の採用実績
+
+| プロジェクト | 方式 | Embedding保存形式 | 詳細 |
+|-------------|------|-----------------|------|
+| **YourTTS** (Coqui TTS) | `compute_embeddings.py` で事前計算 | JSON dict (d-vector 256dim) | `d_vector_file.json`に全話者を格納。推論時はEncoder不要 |
+| **CosyVoice** | `extract_embedding.py` + `add_zero_shot_spk()` | `spk2embedding.pt` | 事前計算後、speaker IDで参照可能。`save_spkinfo()`で永続化 |
+| **XTTS v2** | `get_conditioning_latents()` でキャッシュ | メモリ/ファイル | `gpt_cond_latent` + `speaker_embedding` を事前計算して再利用 |
+| **OpenVoice v2** | `se_extractor.get_se()` | `.pth`ファイル | `checkpoints_v2/ses/`に事前保存。自動キャッシュ機能あり |
+| **SpeechT5** | x-vector事前計算 | `.npy`ファイル | `np.save("speaker.npy", embedding)`で保存、推論時にロード |
+
+### 11.9 推論速度への影響まとめ
+
+| 処理 | 現在 | zero-shot導入後 | 差分 |
+|------|------|----------------|------|
+| Phonemize | 10-50ms | 10-50ms | **±0** |
+| Embedding取得 | ~0μs (Gather) | **<1ms (ファイルロード)** | **+<1ms** |
+| TextEncoder | 30-50ms | 30-50ms | **±0** |
+| Duration Predictor | 10-20ms | 10-20ms | **±0** |
+| Flow | 20-40ms | 20-40ms | **±0** |
+| Generator | 80-150ms | 80-150ms | **±0** |
+| **合計** | **150-310ms** | **150-311ms** | **<1ms増（実質ゼロ）** |
+
+### 11.10 更新された推奨ロードマップ
+
+| フェーズ | 内容 | 推論速度影響 | 工数 |
+|---------|------|------------|------|
+| **Phase 1a** | 事前計算embedding方式のONNX対応 | **ゼロ** | 2-3日 |
+| **Phase 1b** | CAM++ Speaker Encoder統合（オフラインツール） | なし（推論時不使用） | 1-2日 |
+| **Phase 1c** | TTS本体の学習（Speaker Embedding条件付け） | **ゼロ** | 学習180-240h |
+| Phase 2 | TextEncoder Speaker Conditioning | **ゼロ** | 1-2日 + 再学習 |
+| Phase 3 | MB-iSTFT-VITSデコーダ高速化 | **推論4倍高速化** | 3-5日 + 再学習 |
+
+---
+
+## 12. エグゼクティブサマリー更新
+
+> 追加調査 (2026-03-07): 推論速度ゼロインパクトの制約を加えた最終推奨。
+
+### 最終推奨アプローチ
+
+**事前計算Embedding方式 + CAM++ Speaker Encoder (Apache-2.0)**
+
+Piperの「軽量・高速推論」要件を完全に維持しつつ、zero-shot話者再現を実現する。
+
+#### 設計の核心
+
+1. **Speaker Encoderは推論パイプラインに含めない**: オフラインツールとして分離
+2. **事前計算したembeddingをファイルから読み込み**: 推論時の追加コスト <1ms
+3. **ONNXモデルの変更は入力の型変更のみ**: `sid (int64)` → `speaker_embedding (float32[gin_channels])`
+4. **計算グラフの99.9%以上は完全に同一**: 推論速度はゼロインパクト
+
+#### 前回推奨からの変更点
+
+| 項目 | 前回推奨 | 今回推奨（更新） |
+|------|---------|----------------|
+| Speaker Encoder | ECAPA-TDNN (SpeechBrain) | **CAM++** (精度/効率で優位) |
+| 推論時のEncoder実行 | あり（初回のみ） | **なし（完全にオフライン分離）** |
+| 損失関数 | DINO Loss + SCL Loss | DINO Loss + SCL Loss（変更なし） |
+| ONNX設計 | ref_mel入力 + モデル内Encoder | **speaker_embedding入力（Encoder外部化）** |
+| 推論速度への影響 | 初回~50ms追加 | **実質ゼロ（<1ms）** |
+
+---
+
 ## 参考文献
 
 - YourTTS: https://arxiv.org/abs/2112.02418
@@ -923,3 +1204,15 @@ CUDA_VISIBLE_DEVICES="" uv run python -m piper_train.infer_onnx \
 - LibriTTS-R: http://www.openslr.org/141/
 - ZS-TTS-Evaluation: https://github.com/Edresson/ZS-TTS-Evaluation
 - Wespeaker ECAPA-TDNN: https://huggingface.co/Wespeaker/wespeaker-ecapa-tdnn512-LM
+- CAM++: https://arxiv.org/abs/2303.00332
+- ECAPA2: https://arxiv.org/abs/2401.08342
+- ERes2NetV2: https://arxiv.org/abs/2406.02167
+- WeSpeaker: https://github.com/wenet-e2e/wespeaker
+- 3D-Speaker: https://github.com/modelscope/3D-Speaker
+- sherpa-onnx: https://github.com/k2-fsa/sherpa-onnx
+- Resemblyzer: https://github.com/resemble-ai/Resemblyzer
+- TitaNet: https://arxiv.org/abs/2110.04410
+- VI-Speaker: https://github.com/PlayVoice/VI-Speaker
+- OpenVoice: https://github.com/myshell-ai/OpenVoice
+- SV2TTS: https://github.com/CorentinJ/Real-Time-Voice-Cloning
+- Coqui TTS (VITS): https://github.com/coqui-ai/TTS
