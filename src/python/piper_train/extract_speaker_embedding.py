@@ -3,15 +3,15 @@
 
 Usage:
     # Single WAV file
-    python -m piper_train.extract_speaker_embedding \
+    uv run python -m piper_train.extract_speaker_embedding \
         --encoder models/campplus.onnx --audio ref.wav --output speaker.npy
 
     # Directory of WAV files (average embedding)
-    python -m piper_train.extract_speaker_embedding \
+    uv run python -m piper_train.extract_speaker_embedding \
         --encoder models/campplus.onnx --audio-dir speaker_wavs/ --output speaker.npy
 
     # Dataset (all speakers at once)
-    python -m piper_train.extract_speaker_embedding \
+    uv run python -m piper_train.extract_speaker_embedding \
         --encoder models/campplus.onnx --dataset-dir dataset/ --output-dir embeddings/
 """
 
