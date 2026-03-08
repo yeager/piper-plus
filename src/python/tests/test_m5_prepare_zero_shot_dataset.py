@@ -45,6 +45,14 @@ try:
 except Exception:
     pass
 
+_has_torch = False
+try:
+    import torch  # noqa: F401
+
+    _has_torch = True
+except ImportError:
+    pass
+
 
 class TestSpeakerIdAssignment:
     """Speaker ID割り当てロジックのテスト"""
@@ -629,6 +637,7 @@ class TestProcessAudio:
 
     @pytest.mark.unit
     @pytest.mark.skipif(not _has_librosa, reason="librosa not available")
+    @pytest.mark.skipif(not _has_torch, reason="torch not available")
     def test_nonexistent_wav_returns_none(self, tmp_path: Path):
         """存在しないWAVファイルを渡した場合にNoneが返る"""
         fake_wav = tmp_path / "nonexistent.wav"

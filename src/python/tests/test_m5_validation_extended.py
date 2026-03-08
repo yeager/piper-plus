@@ -9,6 +9,8 @@ _assign_speaker_ids の追加テスト.
 from __future__ import annotations
 
 import json
+import sys
+import types
 from pathlib import Path
 from unittest.mock import patch
 
@@ -21,6 +23,21 @@ from piper_train.prepare_zero_shot_dataset import (
     _extract_embeddings_for_moe_speech,
     _validate_dataset,
 )
+
+
+# Ensure piper_train.extract_speaker_embedding is importable even when
+# torch is not installed.  The module is imported lazily inside
+# _extract_embeddings_for_moe_speech, but unittest.mock.patch needs to
+# traverse the dotted path at patch time.  If the real module cannot be
+# imported (torch missing), we insert a lightweight stub so that patch()
+# can resolve the attribute.
+if "piper_train.extract_speaker_embedding" not in sys.modules:
+    try:
+        import piper_train.extract_speaker_embedding  # noqa: F401
+    except ImportError:
+        _stub = types.ModuleType("piper_train.extract_speaker_embedding")
+        _stub.extract_from_dataset = None  # type: ignore[attr-defined]
+        sys.modules["piper_train.extract_speaker_embedding"] = _stub
 
 
 # ================================================================== #
