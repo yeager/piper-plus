@@ -36,16 +36,17 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import os
 import sys
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
+
 # ---------------------------------------------------------------------------
 # Model definitions
 # ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class ModelInfo:
@@ -63,14 +64,11 @@ class ModelInfo:
 # https://github.com/k2-fsa/sherpa-onnx/releases/tag/speaker-recongition-models
 # NOTE: "recongition" is a typo in the official upstream tag name
 _SHERPA_BASE = (
-    "https://github.com/k2-fsa/sherpa-onnx/releases/download"
-    "/speaker-recongition-models"
+    "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models"
 )
 
 # HuggingFace から取得可能なモデル
-_HF_COSYVOICE = (
-    "https://huggingface.co/model-scope/CosyVoice-300M/resolve/main"
-)
+_HF_COSYVOICE = "https://huggingface.co/model-scope/CosyVoice-300M/resolve/main"
 
 MODELS: dict[str, ModelInfo] = {
     "campplus": ModelInfo(
@@ -118,6 +116,7 @@ DEFAULT_MODELS = ["campplus", "wespeaker"]
 # ---------------------------------------------------------------------------
 # Download helpers
 # ---------------------------------------------------------------------------
+
 
 def _format_size(size_bytes: int) -> str:
     """バイト数を人間が読みやすい形式に変換"""
@@ -185,7 +184,7 @@ def download_model(
     if dest.exists() and not force:
         actual_size = dest.stat().st_size
         print(f"[SKIP] {model.filename} ({_format_size(actual_size)}) - already exists")
-        print(f"       Use --force to re-download")
+        print("       Use --force to re-download")
         return True
 
     print(f"[DOWN] {model.filename}")
@@ -206,7 +205,7 @@ def download_model(
             tmp_dest.unlink()
         return False
     except KeyboardInterrupt:
-        print(f"\n[CANCEL] Download interrupted")
+        print("\n[CANCEL] Download interrupted")
         if tmp_dest.exists():
             tmp_dest.unlink()
         return False
@@ -218,10 +217,10 @@ def download_model(
             f"[WARN] Size mismatch: expected ~{_format_size(model.expected_size)}, "
             f"got {_format_size(actual_size)}"
         )
-        print(f"       File may be corrupted. Keeping file for manual inspection.")
+        print("       File may be corrupted. Keeping file for manual inspection.")
         # サイズが大幅に異なる場合でもファイルは残す（HTML error page等の可能性）
         if actual_size < 1_000_000 and model.expected_size > 10_000_000:
-            print(f"[FAIL] Downloaded file is suspiciously small. Removing.")
+            print("[FAIL] Downloaded file is suspiciously small. Removing.")
             tmp_dest.unlink()
             return False
 
@@ -232,7 +231,7 @@ def download_model(
             print(" OK")
         else:
             print(" MISMATCH")
-            print(f"[FAIL] SHA256 hash does not match expected value.")
+            print("[FAIL] SHA256 hash does not match expected value.")
             print(f"       Expected: {model.sha256}")
             tmp_dest.unlink()
             return False
@@ -246,6 +245,7 @@ def download_model(
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -302,7 +302,9 @@ def list_models() -> None:
     print("-" * 80)
     for key, m in MODELS.items():
         default_mark = " [default]" if key in DEFAULT_MODELS else ""
-        print(f"  {key:<22s} {_format_size(m.expected_size):>8s}  {m.description}{default_mark}")
+        print(
+            f"  {key:<22s} {_format_size(m.expected_size):>8s}  {m.description}{default_mark}"
+        )
     print("-" * 80)
     print(f"\nDefault set: {', '.join(DEFAULT_MODELS)}")
 

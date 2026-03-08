@@ -242,7 +242,9 @@ def main():
     if getattr(args, "zero_shot", False):
         _LOGGER.info(
             "Zero-Shot TTS: spk_embed_dim=%d, c_spk=%.1f, c_dino=%.2f",
-            args.spk_embed_dim, args.c_spk, args.c_dino,
+            args.spk_embed_dim,
+            args.c_spk,
+            args.c_dino,
         )
 
     # Initialize scaled_lr
