@@ -472,7 +472,12 @@ def _validate_dataset(
             if not line:
                 continue
             total += 1
-            utt = json.loads(line)
+            try:
+                utt = json.loads(line)
+            except json.JSONDecodeError:
+                _LOGGER.error("Line %d: malformed JSON, skipping", line_num)
+                errors += 1
+                continue
 
             # phoneme_ids が空でないこと
             phoneme_ids = utt.get("phoneme_ids", [])
@@ -694,6 +699,18 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
 
         # moe-speech の話者IDを収集してマップ
         moe_speakers = sorted({u.get("speaker_id", 0) for u in moe_utts})
+        moe_capacity = SPEAKER_ID_RANGES["moe-speech"][1] - moe_start + 1
+        if len(moe_speakers) > moe_capacity:
+            _LOGGER.warning(
+                "moe-speech: %d speakers exceed range capacity %d (IDs %d-%d), "
+                "truncating to %d speakers",
+                len(moe_speakers),
+                moe_capacity,
+                moe_start,
+                SPEAKER_ID_RANGES["moe-speech"][1],
+                moe_capacity,
+            )
+            moe_speakers = moe_speakers[:moe_capacity]
         moe_speaker_map: dict[int, int] = {}
         for idx, orig_id in enumerate(moe_speakers):
             global_id = moe_start + idx

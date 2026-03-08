@@ -218,25 +218,23 @@ class PiperDataset(Dataset):
     @staticmethod
     def load_utterance(line: str, dataset_dir: Path | None = None) -> Utterance:
         utt_dict = json.loads(line)
-        audio_norm_path = Path(utt_dict["audio_norm_path"])
-        audio_spec_path = Path(utt_dict["audio_spec_path"])
 
-        # Resolve relative paths against dataset directory
-        if dataset_dir is not None:
-            if not audio_norm_path.is_absolute():
-                audio_norm_path = dataset_dir / audio_norm_path
-            if not audio_spec_path.is_absolute():
-                audio_spec_path = dataset_dir / audio_spec_path
+        def _resolve(p: str) -> Path:
+            """Resolve a path: if relative and dataset_dir given, prepend it."""
+            path = Path(p)
+            if not path.is_absolute() and dataset_dir is not None:
+                return dataset_dir / path
+            return path
 
         spk_emb_path = utt_dict.get("speaker_embedding_path")
         return Utterance(
             phoneme_ids=utt_dict["phoneme_ids"],
-            audio_norm_path=audio_norm_path,
-            audio_spec_path=audio_spec_path,
+            audio_norm_path=_resolve(utt_dict["audio_norm_path"]),
+            audio_spec_path=_resolve(utt_dict["audio_spec_path"]),
             speaker_id=utt_dict.get("speaker_id"),
             text=utt_dict.get("text"),
             prosody_features=utt_dict.get("prosody_features"),
-            speaker_embedding_path=Path(spk_emb_path) if spk_emb_path else None,
+            speaker_embedding_path=_resolve(spk_emb_path) if spk_emb_path else None,
         )
 
 
