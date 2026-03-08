@@ -299,20 +299,32 @@ def main() -> None:
         "durations": {0: "batch_size", 1: "phonemes"},
     }
 
-    # Configure input names based on model type
+    # Configure input names to match the non-None tensor order in dummy_input.
+    # torch.onnx.export skips None values, so input_names must align with
+    # the positional order of actual tensors passed.
+    input_names = ["input", "input_lengths", "scales"]
     if use_zero_shot:
-        input_names = ["input", "input_lengths", "scales", "speaker_embedding"]
+        # dummy_input: (seq, seq_len, scales, None, [prosody,] spk_emb)
+        # None (sid) is skipped; prosody comes before speaker_embedding
+        if has_prosody:
+            input_names.append("prosody_features")
+            dynamic_axes["prosody_features"] = {0: "batch_size", 1: "phonemes"}
+        input_names.append("speaker_embedding")
         dynamic_axes["speaker_embedding"] = {0: "batch_size"}
     elif num_speakers > 1:
-        input_names = ["input", "input_lengths", "scales", "sid"]
+        # dummy_input: (seq, seq_len, scales, sid, [prosody])
+        input_names.append("sid")
         dynamic_axes["sid"] = {0: "batch_size"}
-    else:
-        input_names = ["input", "input_lengths", "scales"]
-
-    # Add prosody_features if model uses prosody
-    if has_prosody:
+        if has_prosody:
+            input_names.append("prosody_features")
+            dynamic_axes["prosody_features"] = {0: "batch_size", 1: "phonemes"}
+    # dummy_input: (seq, seq_len, scales, [None, prosody])
+    # None (sid) is skipped when prosody is present
+    elif has_prosody:
         input_names.append("prosody_features")
         dynamic_axes["prosody_features"] = {0: "batch_size", 1: "phonemes"}
+
+    if has_prosody:
         _LOGGER.info(
             "Exporting model with prosody features support (prosody_dim=%d)",
             model_g.prosody_dim,

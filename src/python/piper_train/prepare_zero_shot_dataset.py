@@ -128,9 +128,14 @@ def _parse_jvs(jvs_dir: Path) -> list[dict]:
         with open(transcript_path, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
-                if not line or ":" not in line:
+                if not line:
                     continue
-                fname, text = line.split(":", 1)
+                if "\t" in line:
+                    fname, text = line.split("\t", 1)
+                elif ":" in line:
+                    fname, text = line.split(":", 1)
+                else:
+                    continue
                 text_map[fname.strip()] = text.strip()
 
         wav_dir = (
@@ -179,11 +184,19 @@ def _parse_moe_speech(
 
     utterances: list[dict] = []
     with open(jsonl_path, encoding="utf-8") as f:
-        for line in f:
+        for line_num, line in enumerate(f, start=1):
             line = line.strip()
             if not line:
                 continue
-            utt = json.loads(line)
+            try:
+                utt = json.loads(line)
+            except json.JSONDecodeError:
+                _LOGGER.warning(
+                    "Skipping malformed JSON at line %d in %s",
+                    line_num,
+                    jsonl_path,
+                )
+                continue
             utterances.append(utt)
 
     speakers = {u.get("speaker_id", 0) for u in utterances}
@@ -247,6 +260,8 @@ def _phonemize_utterance(
 
     phoneme_ids: list[int] = []
     prosody_features: list[dict | None] = []
+    unknown_count = 0
+    unknown_examples: list[str] = []
 
     for phoneme, prosody_info in zip(
         phonemes, prosody_info_list, strict=True
@@ -266,16 +281,32 @@ def _phonemize_utterance(
                 else:
                     prosody_features.append(None)
         else:
-            _LOGGER.warning(
-                "Unknown phoneme '%s' for language '%s'",
-                phoneme,
-                language,
-            )
+            unknown_count += 1
+            if len(unknown_examples) < 5:
+                unknown_examples.append(phoneme)
+
+    if unknown_count > 0:
+        _LOGGER.warning(
+            "Skipped %d unknown phoneme(s) for language '%s' "
+            "(first examples: %s)",
+            unknown_count,
+            language,
+            unknown_examples,
+        )
 
     # 言語固有のポスト処理 (BOS/EOS/padding)
     phoneme_ids, prosody_features = phonemizer.post_process_ids(
         phoneme_ids, prosody_features, phoneme_id_map
     )
+
+    # 長さ整合性チェック
+    if len(phoneme_ids) != len(prosody_features):
+        msg = (
+            f"phoneme_ids({len(phoneme_ids)}) != "
+            f"prosody_features({len(prosody_features)}) "
+            f"after post_process_ids for text: {text!r}"
+        )
+        raise ValueError(msg)
 
     return phoneme_ids, prosody_features
 
@@ -287,8 +318,12 @@ def _process_audio(
     wav_path: Path,
     cache_dir: Path,
     sample_rate: int,
-) -> tuple[Path, Path]:
-    """WAVを正規化・スペクトログラム化し、キャッシュパスを返す."""
+) -> tuple[Path, Path] | None:
+    """WAVを正規化・スペクトログラム化し、キャッシュパスを返す.
+
+    Returns:
+        (norm_path, spec_path) on success, None on failure.
+    """
     from piper_train.norm_audio import (  # noqa: PLC0415
         cache_norm_audio,
         make_silence_detector,
@@ -299,12 +334,20 @@ def _process_audio(
     if not hasattr(_process_audio, "_detector"):
         _process_audio._detector = make_silence_detector()  # type: ignore[attr-defined]
 
-    audio_norm_path, audio_spec_path = cache_norm_audio(
-        audio_path=wav_path,
-        cache_dir=cache_dir,
-        detector=_process_audio._detector,  # type: ignore[attr-defined]
-        sample_rate=sample_rate,
-    )
+    try:
+        audio_norm_path, audio_spec_path = cache_norm_audio(
+            audio_path=wav_path,
+            cache_dir=cache_dir,
+            detector=_process_audio._detector,  # type: ignore[attr-defined]
+            sample_rate=sample_rate,
+        )
+    except Exception:
+        _LOGGER.warning(
+            "Failed to process audio %s, skipping",
+            wav_path,
+            exc_info=True,
+        )
+        return None
     return audio_norm_path, audio_spec_path
 
 
@@ -702,7 +745,14 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
 
         for utt in moe_utts:
             orig_sid = utt.get("speaker_id", 0)
-            global_sid = moe_speaker_map[orig_sid]
+            global_sid = moe_speaker_map.get(orig_sid)
+            if global_sid is None:
+                _LOGGER.warning(
+                    "moe-speech speaker_id %d not in speaker map, "
+                    "skipping utterance",
+                    orig_sid,
+                )
+                continue
             emb_rel = (
                 f"speaker_embeddings/speaker_{global_sid}.npy"
             )
@@ -768,11 +818,14 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
             audio_norm_path: str | None = None
             audio_spec_path: str | None = None
             if not args.skip_audio:
-                norm_p, spec_p = _process_audio(
+                result = _process_audio(
                     utt["wav_path"],
                     cache_dir,
                     args.sample_rate,
                 )
+                if result is None:
+                    continue
+                norm_p, spec_p = result
                 # output_dir からの相対パスに変換
                 audio_norm_path = str(
                     norm_p.relative_to(output_dir)
@@ -848,11 +901,14 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
             audio_norm_path = None
             audio_spec_path = None
             if not args.skip_audio:
-                norm_p, spec_p = _process_audio(
+                result = _process_audio(
                     utt["wav_path"],
                     cache_dir,
                     args.sample_rate,
                 )
+                if result is None:
+                    continue
+                norm_p, spec_p = result
                 audio_norm_path = str(
                     norm_p.relative_to(output_dir)
                 )

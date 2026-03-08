@@ -64,7 +64,7 @@ def preprocess_audio(wav_path: str | Path, target_sr: int = 16000) -> np.ndarray
         sample_frequency=target_sr,
     )
 
-    # CMVN正規化 (utterance-level)
+    # CMVN正規化 (mean-only, matching CAM++ / 3D-Speaker convention)
     fbank = fbank - fbank.mean(dim=0, keepdim=True)
 
     return fbank.numpy()  # [T, 80]
@@ -101,6 +101,7 @@ def _load_audio_from_pt(
         frame_shift=10.0,
         sample_frequency=target_sr,
     )
+    # CMVN正規化 (mean-only, matching CAM++ / 3D-Speaker convention)
     fbank = fbank - fbank.mean(dim=0, keepdim=True)
 
     return fbank.numpy()

@@ -144,9 +144,14 @@ def main():
     if has_speaker_embedding:
         _LOGGER.info("Model supports zero-shot TTS (speaker_embedding input)")
     if has_speaker_embedding and args.speaker_embedding is None:
+        _LOGGER.error(
+            "Zero-shot model requires --speaker-embedding. "
+            "Provide a .npy file with a 192-dim speaker embedding."
+        )
+        sys.exit(1)
+    if has_speaker_embedding and args.speaker_id is not None:
         _LOGGER.warning(
-            "Zero-shot model detected but --speaker-embedding not provided. "
-            "Output quality may be degraded."
+            "--speaker-id is ignored for zero-shot models (using --speaker-embedding instead)"
         )
 
     # Handle --text mode: convert text to phoneme_ids and prosody_features
@@ -233,7 +238,7 @@ def main():
 
         # speaker_embedding の処理 (zero-shot model)
         if has_speaker_embedding and args.speaker_embedding:
-            spk_emb = np.load(args.speaker_embedding).astype(np.float32)
+            spk_emb = np.load(args.speaker_embedding, allow_pickle=False).astype(np.float32)
             if spk_emb.ndim == 1:
                 spk_emb = spk_emb.reshape(1, -1)
             inputs["speaker_embedding"] = spk_emb
