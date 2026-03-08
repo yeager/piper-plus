@@ -871,11 +871,22 @@ class SynthesizerTrn(nn.Module):
             x_dp = x
         return x_dp
 
-    def forward(self, x, x_lengths, y, y_lengths, sid=None, prosody_features=None, speaker_embedding=None):
+    def forward(
+        self,
+        x,
+        x_lengths,
+        y,
+        y_lengths,
+        sid=None,
+        prosody_features=None,
+        speaker_embedding=None,
+    ):
         x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths)
         if self.use_zero_shot:
             if speaker_embedding is None:
-                raise ValueError("speaker_embedding is required when use_zero_shot=True")
+                raise ValueError(
+                    "speaker_embedding is required when use_zero_shot=True"
+                )
             g = self.spk_proj(speaker_embedding).unsqueeze(-1)  # [b, gin_channels, 1]
         elif self.n_speakers > 1:
             assert sid is not None, "Missing speaker id"
@@ -957,7 +968,9 @@ class SynthesizerTrn(nn.Module):
         x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths)
         if self.use_zero_shot:
             if speaker_embedding is None:
-                raise ValueError("speaker_embedding is required when use_zero_shot=True")
+                raise ValueError(
+                    "speaker_embedding is required when use_zero_shot=True"
+                )
             g = self.spk_proj(speaker_embedding).unsqueeze(-1)  # [b, gin_channels, 1]
         elif self.n_speakers > 1:
             assert sid is not None, "Missing speaker id"

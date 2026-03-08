@@ -238,7 +238,9 @@ def main():
 
         # speaker_embedding の処理 (zero-shot model)
         if has_speaker_embedding and args.speaker_embedding:
-            spk_emb = np.load(args.speaker_embedding, allow_pickle=False).astype(np.float32)
+            spk_emb = np.load(args.speaker_embedding, allow_pickle=False).astype(
+                np.float32
+            )
             if spk_emb.ndim == 1:
                 spk_emb = spk_emb.reshape(1, -1)
             inputs["speaker_embedding"] = spk_emb

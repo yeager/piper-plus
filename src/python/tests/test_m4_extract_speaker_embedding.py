@@ -6,6 +6,10 @@ M4: Speaker Embedding抽出ツールのテスト
 - CLI引数バリデーション
 """
 
+import json
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
 import numpy as np
 import pytest
 
@@ -33,6 +37,28 @@ pytestmark = pytest.mark.skipif(
 # soundfile が利用できない場合、音声I/Oテストをスキップ
 _requires_soundfile = pytest.mark.skipif(
     sf is None, reason="soundfile required for WAV I/O"
+)
+
+# torchaudio.load が torchcodec を必要とする場合をチェック
+_torchaudio_load_available = False
+if torchaudio is not None:
+    try:
+        import tempfile as _tempfile
+
+        with _tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as _tf:
+            if sf is not None:
+                # 最小限のWAVを書き出して torchaudio.load が動くか確認
+                import numpy as _np
+
+                sf.write(_tf.name, _np.zeros(160, dtype="float32"), 16000)
+                torchaudio.load(_tf.name)
+                _torchaudio_load_available = True
+    except Exception:
+        pass
+
+_requires_torchaudio_load = pytest.mark.skipif(
+    not _torchaudio_load_available,
+    reason="torchaudio.load not functional (torchcodec may be missing)",
 )
 
 
@@ -219,3 +245,207 @@ class TestCLIValidation:
         assert loaded.shape == (192,)
         assert loaded.dtype == np.float32
         np.testing.assert_allclose(loaded, emb, rtol=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# 実モジュール関数の直接テスト
+# ---------------------------------------------------------------------------
+
+
+@_requires_soundfile
+@_requires_torchaudio_load
+class TestPreprocessAudioReal:
+    """実際の preprocess_audio() 関数を直接インポートしてテスト"""
+
+    @pytest.mark.unit
+    def test_preprocess_audio_shape_and_type(self, tmp_path):
+        """preprocess_audio() の出力が np.ndarray, shape (T, 80) であること"""
+        from piper_train.extract_speaker_embedding import preprocess_audio
+
+        sr = 16000
+        duration = 1.0
+        waveform = torch.randn(1, int(sr * duration))
+        wav_path = tmp_path / "test_real.wav"
+        _save_wav(wav_path, waveform, sr)
+
+        fbank = preprocess_audio(wav_path)
+
+        assert isinstance(fbank, np.ndarray)
+        assert fbank.ndim == 2
+        assert fbank.shape[1] == 80
+        # 1秒 / 10msフレームシフト = 約100フレーム
+        expected_frames = int(duration * 1000 / 10)
+        assert abs(fbank.shape[0] - expected_frames) <= 5
+
+    @pytest.mark.unit
+    def test_preprocess_audio_cmvn_mean_zero(self, tmp_path):
+        """CMVN正規化により各次元のmeanが約0であること"""
+        from piper_train.extract_speaker_embedding import preprocess_audio
+
+        sr = 16000
+        duration = 2.0
+        waveform = torch.randn(1, int(sr * duration))
+        wav_path = tmp_path / "test_cmvn.wav"
+        _save_wav(wav_path, waveform, sr)
+
+        fbank = preprocess_audio(wav_path)
+
+        # 各次元の平均が0に近いこと
+        col_means = fbank.mean(axis=0)
+        np.testing.assert_allclose(col_means, 0.0, atol=1e-5)
+
+
+class TestLoadAudioFromPt:
+    """_load_audio_from_pt() のテスト"""
+
+    @pytest.mark.unit
+    def test_load_2d_tensor(self, tmp_path):
+        """2Dテンソル (1, samples) からFbank特徴量が抽出されること"""
+        from piper_train.extract_speaker_embedding import _load_audio_from_pt
+
+        audio = torch.randn(1, 22050)
+        pt_path = tmp_path / "audio_2d.pt"
+        torch.save(audio, pt_path)
+
+        fbank = _load_audio_from_pt(pt_path)
+
+        assert isinstance(fbank, np.ndarray)
+        assert fbank.ndim == 2
+        assert fbank.shape[1] == 80
+
+    @pytest.mark.unit
+    def test_load_1d_tensor(self, tmp_path):
+        """1Dテンソル (samples,) でも正常に動作すること"""
+        from piper_train.extract_speaker_embedding import _load_audio_from_pt
+
+        audio = torch.randn(22050)
+        pt_path = tmp_path / "audio_1d.pt"
+        torch.save(audio, pt_path)
+
+        fbank = _load_audio_from_pt(pt_path)
+
+        assert isinstance(fbank, np.ndarray)
+        assert fbank.ndim == 2
+        assert fbank.shape[1] == 80
+
+
+class TestExtractEmbeddingMock:
+    """extract_embedding() のモックテスト"""
+
+    @pytest.mark.unit
+    def test_extract_embedding_shape_and_norm(self):
+        """モックセッションでembeddingのshapeとL2ノルムを検証"""
+        from piper_train.extract_speaker_embedding import extract_embedding
+
+        # ONNXセッションのモック
+        mock_session = MagicMock()
+        mock_input = MagicMock()
+        mock_input.name = "fbank"
+        mock_session.get_inputs.return_value = [mock_input]
+        mock_session.run.return_value = [np.random.randn(1, 192).astype(np.float32)]
+
+        fbank = np.random.randn(100, 80).astype(np.float32)
+        embedding = extract_embedding(mock_session, fbank)
+
+        assert embedding.shape == (192,)
+        assert abs(np.linalg.norm(embedding) - 1.0) < 1e-5
+
+        # session.run が正しい入力名で呼ばれたことを確認
+        mock_session.run.assert_called_once()
+        call_args = mock_session.run.call_args
+        assert "fbank" in call_args[1] or "fbank" in call_args[0][1]
+
+
+class TestExtractFromFilesMock:
+    """extract_from_files() のモックテスト"""
+
+    @pytest.mark.unit
+    def test_extract_from_files_average_norm(self):
+        """3ファイル分のembeddingを平均化し、L2ノルムが約1.0であること"""
+        from piper_train.extract_speaker_embedding import extract_from_files
+
+        mock_session = MagicMock()
+
+        def _mock_extract(session, fbank):
+            emb = np.random.randn(192).astype(np.float32)
+            return emb / np.linalg.norm(emb)
+
+        with (
+            patch(
+                "piper_train.extract_speaker_embedding.preprocess_audio",
+                return_value=np.random.randn(100, 80).astype(np.float32),
+            ),
+            patch(
+                "piper_train.extract_speaker_embedding.extract_embedding",
+                side_effect=_mock_extract,
+            ),
+        ):
+            wav_paths = [Path(f"/tmp/fake_{i}.wav") for i in range(3)]
+            result = extract_from_files(mock_session, wav_paths)
+
+        assert result.shape == (192,)
+        assert abs(np.linalg.norm(result) - 1.0) < 1e-5
+
+
+class TestExtractFromDatasetMock:
+    """extract_from_dataset() のモックテスト"""
+
+    @pytest.mark.unit
+    def test_extract_from_dataset_generates_npy(self, tmp_path):
+        """dataset.jsonlから2話者分のembeddingが生成されること"""
+        from piper_train.extract_speaker_embedding import extract_from_dataset
+
+        dataset_dir = tmp_path / "dataset"
+        dataset_dir.mkdir()
+        output_dir = tmp_path / "embeddings"
+
+        # 2話者、各3発話の dataset.jsonl を作成
+        lines = []
+        for speaker_id in range(2):
+            for utt_idx in range(3):
+                audio_rel = f"speaker_{speaker_id}/utt_{utt_idx}.pt"
+                lines.append(
+                    json.dumps(
+                        {
+                            "speaker_id": speaker_id,
+                            "audio_norm_path": audio_rel,
+                        }
+                    )
+                )
+                # 対応する .pt ファイルを作成 (4秒分 = 22050*4)
+                pt_dir = dataset_dir / f"speaker_{speaker_id}"
+                pt_dir.mkdir(exist_ok=True)
+                pt_path = pt_dir / f"utt_{utt_idx}.pt"
+                torch.save(torch.randn(1, 22050 * 4), pt_path)
+
+        jsonl_path = dataset_dir / "dataset.jsonl"
+        jsonl_path.write_text("\n".join(lines) + "\n")
+
+        mock_session = MagicMock()
+
+        def _mock_extract(session, fbank):
+            emb = np.random.randn(192).astype(np.float32)
+            return emb / np.linalg.norm(emb)
+
+        with patch(
+            "piper_train.extract_speaker_embedding.extract_embedding",
+            side_effect=_mock_extract,
+        ):
+            extract_from_dataset(
+                mock_session,
+                dataset_dir=dataset_dir,
+                output_dir=output_dir,
+                max_utterances=10,
+                min_duration=3.0,
+                source_sr=22050,
+            )
+
+        # 各話者の .npy ファイルが生成されていること
+        assert (output_dir / "speaker_0.npy").exists()
+        assert (output_dir / "speaker_1.npy").exists()
+
+        # 読み込んでshapeとノルムを検証
+        for sid in range(2):
+            emb = np.load(str(output_dir / f"speaker_{sid}.npy"))
+            assert emb.shape == (192,)
+            assert abs(np.linalg.norm(emb) - 1.0) < 1e-4

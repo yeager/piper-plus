@@ -106,6 +106,7 @@ class TestDatasetSpeakerEmbedding:
     def test_batch_has_speaker_embeddings_field(self):
         """Batch dataclassにspeaker_embeddingsフィールドがある"""
         from piper_train.vits.dataset import Batch
+
         batch = Batch(
             phoneme_ids=torch.zeros(1, 10, dtype=torch.long),
             phoneme_lengths=torch.LongTensor([10]),
@@ -122,6 +123,7 @@ class TestDatasetSpeakerEmbedding:
     def test_batch_speaker_embeddings_default_none(self):
         """Batch.speaker_embeddingsのデフォルトはNone"""
         from piper_train.vits.dataset import Batch
+
         batch = Batch(
             phoneme_ids=torch.zeros(1, 10, dtype=torch.long),
             phoneme_lengths=torch.LongTensor([10]),
@@ -138,6 +140,7 @@ class TestDatasetSpeakerEmbedding:
         from pathlib import Path
 
         from piper_train.vits.dataset import Utterance
+
         utt = Utterance(
             phoneme_ids=[1, 2, 3],
             audio_norm_path=Path("/tmp/audio.pt"),
@@ -145,6 +148,102 @@ class TestDatasetSpeakerEmbedding:
             speaker_embedding_path=Path("/tmp/speaker.npy"),
         )
         assert utt.speaker_embedding_path == Path("/tmp/speaker.npy")
+
+
+class TestUtteranceCollateSpeakerEmbedding:
+    """UtteranceCollate.__call__() の speaker_embedding スタッキングテスト"""
+
+    @pytest.mark.unit
+    def test_collate_stacks_speaker_embeddings(self):
+        """speaker_embedding付きUtteranceTensors 3つでcollateするとshape=(3,192)"""
+        from piper_train.vits.dataset import UtteranceCollate, UtteranceTensors
+
+        utts = []
+        for i in range(3):
+            utts.append(
+                UtteranceTensors(
+                    phoneme_ids=torch.LongTensor([1, 2, 3]),
+                    spectrogram=torch.randn(80, 10 + i),
+                    audio_norm=torch.randn(1, 8192 + i * 100),
+                    speaker_embedding=torch.randn(192),
+                )
+            )
+
+        collate = UtteranceCollate(is_multispeaker=False, segment_size=8192)
+        batch = collate(utts)
+
+        assert batch.speaker_embeddings is not None
+        assert batch.speaker_embeddings.shape == (3, 192)
+
+    @pytest.mark.unit
+    def test_collate_mixed_speaker_embeddings_zero_fill(self):
+        """speaker_embeddingがNone混在の場合、ゼロ埋めされること"""
+        from piper_train.vits.dataset import UtteranceCollate, UtteranceTensors
+
+        utt_with_emb = UtteranceTensors(
+            phoneme_ids=torch.LongTensor([1, 2, 3]),
+            spectrogram=torch.randn(80, 10),
+            audio_norm=torch.randn(1, 8192),
+            speaker_embedding=torch.randn(192),
+        )
+        utt_without_emb = UtteranceTensors(
+            phoneme_ids=torch.LongTensor([4, 5, 6]),
+            spectrogram=torch.randn(80, 12),
+            audio_norm=torch.randn(1, 8300),
+            speaker_embedding=None,
+        )
+        utt_with_emb2 = UtteranceTensors(
+            phoneme_ids=torch.LongTensor([7, 8]),
+            spectrogram=torch.randn(80, 8),
+            audio_norm=torch.randn(1, 8100),
+            speaker_embedding=torch.randn(192),
+        )
+
+        collate = UtteranceCollate(is_multispeaker=False, segment_size=8192)
+        batch = collate([utt_with_emb, utt_without_emb, utt_with_emb2])
+
+        assert batch.speaker_embeddings is not None
+        assert batch.speaker_embeddings.shape == (3, 192)
+        # sorted by decreasing spec_length: utt_without_emb(12), utt_with_emb(10), utt_with_emb2(8)
+        # index 0 = utt_without_emb (None -> zero), should be all zeros
+        assert torch.all(batch.speaker_embeddings[0] == 0.0)
+        # index 1 and 2 should have non-zero embeddings
+        assert batch.speaker_embeddings[1].abs().sum() > 0
+        assert batch.speaker_embeddings[2].abs().sum() > 0
+
+
+class TestNpLoadSecurity:
+    """np.load(allow_pickle=False) セキュリティテスト"""
+
+    @pytest.mark.unit
+    def test_np_load_allow_pickle_false_normal_array(self, tmp_path):
+        """正常な配列を保存し、allow_pickle=Falseで正常に読める"""
+        import numpy as np
+
+        arr = np.random.randn(192).astype(np.float32)
+        npy_path = tmp_path / "normal.npy"
+        np.save(str(npy_path), arr)
+
+        loaded = np.load(str(npy_path), allow_pickle=False)
+        assert loaded.shape == (192,)
+        assert loaded.dtype == np.float32
+        np.testing.assert_array_equal(loaded, arr)
+
+    @pytest.mark.unit
+    def test_np_load_allow_pickle_false_rejects_pickle(self, tmp_path):
+        """pickleオブジェクトを含む.npyはallow_pickle=Falseで読めない"""
+        import pickle
+
+        import numpy as np
+
+        # Create a pickle-based .npy file manually
+        pickle_path = tmp_path / "pickle_obj.npy"
+        obj = {"malicious": "data"}
+        with open(str(pickle_path), "wb") as f:
+            pickle.dump(obj, f)
+
+        with pytest.raises((ValueError, OSError)):
+            np.load(str(pickle_path), allow_pickle=False)
 
 
 class TestTrainingLoopRegression:
@@ -158,6 +257,7 @@ class TestTrainingLoopRegression:
             feature_loss,
             generator_loss,
         )
+
         # feature_loss
         fmap_r = [[torch.randn(2, 64, 100)]]
         fmap_g = [[torch.randn(2, 64, 100)]]

@@ -85,7 +85,12 @@ class TestExportOnnxZeroShot:
         from piper_train.vits import commons
 
         def infer_forward(
-            text, text_lengths, scales, sid=None, prosody_features=None, speaker_embedding=None
+            text,
+            text_lengths,
+            scales,
+            sid=None,
+            prosody_features=None,
+            speaker_embedding=None,
         ):
             x, m_p, logs_p, x_mask = model.enc_p(text, text_lengths)
             g = model.spk_proj(speaker_embedding).unsqueeze(-1)
@@ -100,7 +105,9 @@ class TestExportOnnxZeroShot:
             attn_mask = torch.unsqueeze(x_mask, 2) * torch.unsqueeze(y_mask, -1)
             attn = commons.generate_path(w_ceil, attn_mask)
             m_p = torch.matmul(attn.squeeze(1), m_p.transpose(1, 2)).transpose(1, 2)
-            logs_p = torch.matmul(attn.squeeze(1), logs_p.transpose(1, 2)).transpose(1, 2)
+            logs_p = torch.matmul(attn.squeeze(1), logs_p.transpose(1, 2)).transpose(
+                1, 2
+            )
             z_p = m_p
             z = model.flow(z_p, y_mask, g=g, reverse=True)
             o = model.dec((z * y_mask), g=g)
@@ -120,11 +127,24 @@ class TestExportOnnxZeroShot:
 
         torch.onnx.export(
             model=model,
-            args=(sequences, sequence_lengths, scales, None, prosody_features, dummy_speaker_embedding),
+            args=(
+                sequences,
+                sequence_lengths,
+                scales,
+                None,
+                prosody_features,
+                dummy_speaker_embedding,
+            ),
             f=str(onnx_path),
             verbose=False,
             opset_version=15,
-            input_names=["input", "input_lengths", "scales", "speaker_embedding", "prosody_features"],
+            input_names=[
+                "input",
+                "input_lengths",
+                "scales",
+                "speaker_embedding",
+                "prosody_features",
+            ],
             output_names=["output", "durations"],
             dynamic_axes={
                 "input": {0: "batch_size", 1: "phonemes"},
@@ -149,7 +169,9 @@ class TestExportOnnxZeroShot:
         )
 
         # Run inference with speaker_embedding
-        text_np = np.expand_dims(np.array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], dtype=np.int64), 0)
+        text_np = np.expand_dims(
+            np.array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10], dtype=np.int64), 0
+        )
         text_lengths_np = np.array([text_np.shape[1]], dtype=np.int64)
         scales_np = np.array([0.667, 1.0, 0.8], dtype=np.float32)
         spk_emb_np = np.random.randn(1, 192).astype(np.float32)
@@ -204,7 +226,9 @@ class TestExportOnnxZeroShot:
             attn_mask = torch.unsqueeze(x_mask, 2) * torch.unsqueeze(y_mask, -1)
             attn = commons.generate_path(w_ceil, attn_mask)
             m_p = torch.matmul(attn.squeeze(1), m_p.transpose(1, 2)).transpose(1, 2)
-            logs_p = torch.matmul(attn.squeeze(1), logs_p.transpose(1, 2)).transpose(1, 2)
+            logs_p = torch.matmul(attn.squeeze(1), logs_p.transpose(1, 2)).transpose(
+                1, 2
+            )
             z_p = m_p
             z = model.flow(z_p, y_mask, g=g, reverse=True)
             o = model.dec((z * y_mask), g=g)
@@ -272,7 +296,12 @@ class TestExportOnnxZeroShot:
             zs_model.dp.onnx_export_mode = True
 
         def zs_infer_forward(
-            text, text_lengths, scales, sid=None, prosody_features=None, speaker_embedding=None
+            text,
+            text_lengths,
+            scales,
+            sid=None,
+            prosody_features=None,
+            speaker_embedding=None,
         ):
             x, m_p, logs_p, x_mask = zs_model.enc_p(text, text_lengths)
             g = zs_model.spk_proj(speaker_embedding).unsqueeze(-1)
@@ -287,7 +316,9 @@ class TestExportOnnxZeroShot:
             attn_mask = torch.unsqueeze(x_mask, 2) * torch.unsqueeze(y_mask, -1)
             attn = commons.generate_path(w_ceil, attn_mask)
             m_p = torch.matmul(attn.squeeze(1), m_p.transpose(1, 2)).transpose(1, 2)
-            logs_p = torch.matmul(attn.squeeze(1), logs_p.transpose(1, 2)).transpose(1, 2)
+            logs_p = torch.matmul(attn.squeeze(1), logs_p.transpose(1, 2)).transpose(
+                1, 2
+            )
             z_p = m_p
             z = zs_model.flow(z_p, y_mask, g=g, reverse=True)
             o = zs_model.dec((z * y_mask), g=g)
@@ -305,11 +336,24 @@ class TestExportOnnxZeroShot:
         zs_onnx_path = tmp_path / "zs_model.onnx"
         torch.onnx.export(
             model=zs_model,
-            args=(sequences, sequence_lengths, scales, None, prosody_features, dummy_speaker_embedding),
+            args=(
+                sequences,
+                sequence_lengths,
+                scales,
+                None,
+                prosody_features,
+                dummy_speaker_embedding,
+            ),
             f=str(zs_onnx_path),
             verbose=False,
             opset_version=15,
-            input_names=["input", "input_lengths", "scales", "speaker_embedding", "prosody_features"],
+            input_names=[
+                "input",
+                "input_lengths",
+                "scales",
+                "speaker_embedding",
+                "prosody_features",
+            ],
             output_names=["output", "durations"],
             dynamic_axes={
                 "input": {0: "batch_size", 1: "phonemes"},
@@ -337,7 +381,9 @@ class TestExportOnnxZeroShot:
         if hasattr(ms_model, "dp"):
             ms_model.dp.onnx_export_mode = True
 
-        def ms_infer_forward(text, text_lengths, scales, sid=None, prosody_features=None):
+        def ms_infer_forward(
+            text, text_lengths, scales, sid=None, prosody_features=None
+        ):
             x, m_p, logs_p, x_mask = ms_model.enc_p(text, text_lengths)
             g = ms_model.emb_g(sid).unsqueeze(-1)
             x_dp = ms_model._prepare_prosody_input(x, x_mask, prosody_features)
@@ -351,7 +397,9 @@ class TestExportOnnxZeroShot:
             attn_mask = torch.unsqueeze(x_mask, 2) * torch.unsqueeze(y_mask, -1)
             attn = commons.generate_path(w_ceil, attn_mask)
             m_p = torch.matmul(attn.squeeze(1), m_p.transpose(1, 2)).transpose(1, 2)
-            logs_p = torch.matmul(attn.squeeze(1), logs_p.transpose(1, 2)).transpose(1, 2)
+            logs_p = torch.matmul(attn.squeeze(1), logs_p.transpose(1, 2)).transpose(
+                1, 2
+            )
             z_p = m_p
             z = ms_model.flow(z_p, y_mask, g=g, reverse=True)
             o = ms_model.dec((z * y_mask), g=g)
@@ -388,6 +436,119 @@ class TestExportOnnxZeroShot:
             f"ONNX model size difference is {size_diff_mb:.2f} MB, "
             f"expected < 1 MB (zero-shot: {zs_size} bytes, multispeaker: {ms_size} bytes)"
         )
+
+
+class TestSpeakerEmbeddingNpyLoad:
+    """speaker_embedding の allow_pickle=False テスト"""
+
+    @pytest.mark.unit
+    def test_npy_load_allow_pickle_false(self, tmp_path):
+        """正常なembedding .npyをallow_pickle=Falseで読み込めること"""
+        emb = np.random.randn(192).astype(np.float32)
+        npy_path = tmp_path / "speaker.npy"
+        np.save(str(npy_path), emb)
+
+        loaded = np.load(str(npy_path), allow_pickle=False)
+        assert loaded.shape == (192,)
+        assert loaded.dtype == np.float32
+        np.testing.assert_array_almost_equal(loaded, emb)
+
+    @pytest.mark.unit
+    def test_npy_2d_load_allow_pickle_false(self, tmp_path):
+        """2D embedding .npyをallow_pickle=Falseで読み込めること"""
+        emb = np.random.randn(1, 192).astype(np.float32)
+        npy_path = tmp_path / "speaker_2d.npy"
+        np.save(str(npy_path), emb)
+
+        loaded = np.load(str(npy_path), allow_pickle=False)
+        assert loaded.shape == (1, 192)
+        assert loaded.dtype == np.float32
+
+
+class TestExportOnnxInputNames:
+    """export_onnx.py の input_names 構築ロジックのテスト"""
+
+    @staticmethod
+    def _build_input_names(use_zero_shot: bool, num_speakers: int, has_prosody: bool):
+        """export_onnx.py のinput_names構築ロジックをインライン再現"""
+        input_names = ["input", "input_lengths", "scales"]
+        if use_zero_shot:
+            if has_prosody:
+                input_names.append("prosody_features")
+            input_names.append("speaker_embedding")
+        elif num_speakers > 1:
+            input_names.append("sid")
+            if has_prosody:
+                input_names.append("prosody_features")
+        elif has_prosody:
+            input_names.append("prosody_features")
+        return input_names
+
+    @pytest.mark.unit
+    def test_zero_shot_with_prosody(self):
+        """zero-shot + prosody: prosody_features の後に speaker_embedding"""
+        names = self._build_input_names(
+            use_zero_shot=True, num_speakers=1, has_prosody=True
+        )
+        assert names == [
+            "input",
+            "input_lengths",
+            "scales",
+            "prosody_features",
+            "speaker_embedding",
+        ]
+
+    @pytest.mark.unit
+    def test_zero_shot_without_prosody(self):
+        """zero-shot のみ（prosodyなし）: speaker_embedding"""
+        names = self._build_input_names(
+            use_zero_shot=True, num_speakers=1, has_prosody=False
+        )
+        assert names == [
+            "input",
+            "input_lengths",
+            "scales",
+            "speaker_embedding",
+        ]
+
+    @pytest.mark.unit
+    def test_multispeaker_with_prosody(self):
+        """multispeaker + prosody: sid, prosody_features"""
+        names = self._build_input_names(
+            use_zero_shot=False, num_speakers=20, has_prosody=True
+        )
+        assert names == [
+            "input",
+            "input_lengths",
+            "scales",
+            "sid",
+            "prosody_features",
+        ]
+
+    @pytest.mark.unit
+    def test_prosody_only_single_speaker(self):
+        """prosody のみ（single speaker）: prosody_features"""
+        names = self._build_input_names(
+            use_zero_shot=False, num_speakers=1, has_prosody=True
+        )
+        assert names == [
+            "input",
+            "input_lengths",
+            "scales",
+            "prosody_features",
+        ]
+
+    @pytest.mark.unit
+    def test_single_speaker_no_prosody(self):
+        """single speaker, prosodyなし: 基本3つのみ"""
+        names = self._build_input_names(
+            use_zero_shot=False, num_speakers=1, has_prosody=False
+        )
+        assert names == [
+            "input",
+            "input_lengths",
+            "scales",
+        ]
 
 
 class TestInferOnnxSpeakerEmbedding:

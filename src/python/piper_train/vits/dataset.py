@@ -116,7 +116,10 @@ class PiperDataset(Dataset):
                 speaker_embedding_tensor = None
                 if utt.speaker_embedding_path is not None:
                     import numpy as np
-                    spk_emb = np.load(utt.speaker_embedding_path, allow_pickle=False).astype(np.float32)
+
+                    spk_emb = np.load(
+                        utt.speaker_embedding_path, allow_pickle=False
+                    ).astype(np.float32)
                     speaker_embedding_tensor = torch.from_numpy(spk_emb)
 
                 return UtteranceTensors(

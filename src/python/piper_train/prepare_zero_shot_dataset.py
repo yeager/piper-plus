@@ -60,17 +60,11 @@ def _parse_libritts(
             for chapter_dir in sorted(speaker_dir.iterdir()):
                 if not chapter_dir.is_dir():
                     continue
-                for txt_path in sorted(
-                    chapter_dir.glob("*.normalized.txt")
-                ):
-                    stem = txt_path.name.replace(
-                        ".normalized.txt", ""
-                    )
+                for txt_path in sorted(chapter_dir.glob("*.normalized.txt")):
+                    stem = txt_path.name.replace(".normalized.txt", "")
                     wav_path = chapter_dir / f"{stem}.wav"
                     if not wav_path.exists():
-                        _LOGGER.warning(
-                            "WAV not found for %s", txt_path
-                        )
+                        _LOGGER.warning("WAV not found for %s", txt_path)
                         continue
                     text = txt_path.read_text(encoding="utf-8").strip()
                     if not text:
@@ -104,23 +98,15 @@ def _parse_jvs(jvs_dir: Path) -> list[dict]:
             continue
         # 話者ID抽出 (jvs001 → 1)
         try:
-            corpus_speaker_id = str(
-                int(speaker_dir.name.replace("jvs", ""))
-            )
+            corpus_speaker_id = str(int(speaker_dir.name.replace("jvs", "")))
         except ValueError:
-            _LOGGER.warning(
-                "Skipping non-JVS directory: %s", speaker_dir
-            )
+            _LOGGER.warning("Skipping non-JVS directory: %s", speaker_dir)
             continue
 
         # transcripts_utf8.txt を読み込み
-        transcript_path = (
-            speaker_dir / "parallel100" / "transcripts_utf8.txt"
-        )
+        transcript_path = speaker_dir / "parallel100" / "transcripts_utf8.txt"
         if not transcript_path.exists():
-            _LOGGER.warning(
-                "Transcript not found: %s", transcript_path
-            )
+            _LOGGER.warning("Transcript not found: %s", transcript_path)
             continue
 
         # テキストマップ: ファイル名 → テキスト
@@ -138,9 +124,7 @@ def _parse_jvs(jvs_dir: Path) -> list[dict]:
                     continue
                 text_map[fname.strip()] = text.strip()
 
-        wav_dir = (
-            speaker_dir / "parallel100" / "wav24kHz16bit"
-        )
+        wav_dir = speaker_dir / "parallel100" / "wav24kHz16bit"
         if not wav_dir.exists():
             _LOGGER.warning("WAV dir not found: %s", wav_dir)
             continue
@@ -149,9 +133,7 @@ def _parse_jvs(jvs_dir: Path) -> list[dict]:
             fname_key = wav_path.stem
             text = text_map.get(fname_key)
             if text is None:
-                _LOGGER.debug(
-                    "No transcript for %s", wav_path.name
-                )
+                _LOGGER.debug("No transcript for %s", wav_path.name)
                 continue
             utterances.append(
                 {
@@ -225,8 +207,7 @@ def _assign_speaker_ids(
     capacity = end - start + 1
     if len(unique_sorted) > capacity:
         _LOGGER.warning(
-            "%s: %d speakers exceed range capacity %d, "
-            "truncating to %d",
+            "%s: %d speakers exceed range capacity %d, truncating to %d",
             corpus_name,
             len(unique_sorted),
             capacity,
@@ -234,10 +215,7 @@ def _assign_speaker_ids(
         )
         unique_sorted = unique_sorted[:capacity]
 
-    return {
-        spk: start + idx
-        for idx, spk in enumerate(unique_sorted)
-    }
+    return {spk: start + idx for idx, spk in enumerate(unique_sorted)}
 
 
 # ------------------------------------------------------------------ #
@@ -254,18 +232,14 @@ def _phonemize_utterance(
     )
 
     phonemizer = get_phonemizer(language)
-    phonemes, prosody_info_list = (
-        phonemizer.phonemize_with_prosody(text)
-    )
+    phonemes, prosody_info_list = phonemizer.phonemize_with_prosody(text)
 
     phoneme_ids: list[int] = []
     prosody_features: list[dict | None] = []
     unknown_count = 0
     unknown_examples: list[str] = []
 
-    for phoneme, prosody_info in zip(
-        phonemes, prosody_info_list, strict=True
-    ):
+    for phoneme, prosody_info in zip(phonemes, prosody_info_list, strict=True):
         if phoneme in phoneme_id_map:
             ids = phoneme_id_map[phoneme]
             phoneme_ids.extend(ids)
@@ -287,8 +261,7 @@ def _phonemize_utterance(
 
     if unknown_count > 0:
         _LOGGER.warning(
-            "Skipped %d unknown phoneme(s) for language '%s' "
-            "(first examples: %s)",
+            "Skipped %d unknown phoneme(s) for language '%s' (first examples: %s)",
             unknown_count,
             language,
             unknown_examples,
@@ -421,9 +394,7 @@ def _extract_embeddings_for_moe_speech(
 
         # リネーム: speaker_{original_id}.npy → speaker_{offset+original_id}.npy
         for npy_path in sorted(tmp_path.glob("speaker_*.npy")):
-            original_id = int(
-                npy_path.stem.replace("speaker_", "")
-            )
+            original_id = int(npy_path.stem.replace("speaker_", ""))
             new_id = speaker_id_offset + original_id
             dest = emb_dir / f"speaker_{new_id}.npy"
             shutil.copy2(npy_path, dest)
@@ -506,9 +477,7 @@ def _validate_dataset(
             # phoneme_ids が空でないこと
             phoneme_ids = utt.get("phoneme_ids", [])
             if not phoneme_ids:
-                _LOGGER.error(
-                    "Line %d: empty phoneme_ids", line_num
-                )
+                _LOGGER.error("Line %d: empty phoneme_ids", line_num)
                 errors += 1
 
             # prosody_features の長さ一致
@@ -516,8 +485,7 @@ def _validate_dataset(
             if prosody is not None:
                 if len(phoneme_ids) != len(prosody):
                     _LOGGER.error(
-                        "Line %d: phoneme_ids(%d) != "
-                        "prosody_features(%d)",
+                        "Line %d: phoneme_ids(%d) != prosody_features(%d)",
                         line_num,
                         len(phoneme_ids),
                         len(prosody),
@@ -554,8 +522,7 @@ def _validate_dataset(
                 full_path = output_dir / emb_path
                 if not full_path.exists():
                     _LOGGER.error(
-                        "Line %d: speaker_embedding_path "
-                        "not found: %s",
+                        "Line %d: speaker_embedding_path not found: %s",
                         line_num,
                         full_path,
                     )
@@ -584,24 +551,19 @@ def _validate_dataset(
         collision = ja_ids & en_ids
         if collision:
             _LOGGER.error(
-                "phoneme_id_map collision: %d IDs overlap "
-                "between ja and en: %s",
+                "phoneme_id_map collision: %d IDs overlap between ja and en: %s",
                 len(collision),
                 sorted(collision)[:20],
             )
             errors += 1
         else:
             _LOGGER.info(
-                "phoneme_id_map: no collisions "
-                "(ja=%d, en=%d IDs)",
+                "phoneme_id_map: no collisions (ja=%d, en=%d IDs)",
                 len(ja_ids),
                 len(en_ids),
             )
     except ImportError:
-        _LOGGER.warning(
-            "piper_phonemize not available; "
-            "skipping ID collision check"
-        )
+        _LOGGER.warning("piper_phonemize not available; skipping ID collision check")
 
     _LOGGER.info(
         "Validation complete: %d entries, %d errors",
@@ -624,8 +586,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
     parser = argparse.ArgumentParser(
         prog="piper_train.prepare_zero_shot_dataset",
         description=(
-            "Zero-shot TTS学習用データ準備: "
-            "LibriTTS-R / JVS / moe-speech を統合"
+            "Zero-shot TTS学習用データ準備: LibriTTS-R / JVS / moe-speech を統合"
         ),
     )
     parser.add_argument(
@@ -688,9 +649,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
     args = parser.parse_args()
 
     # 少なくとも1つのコーパスが必要
-    if not any(
-        [args.libritts_dir, args.jvs_dir, args.moe_speech_dir]
-    ):
+    if not any([args.libritts_dir, args.jvs_dir, args.moe_speech_dir]):
         parser.error(
             "少なくとも1つのコーパスディレクトリを指定してください "
             "(--libritts-dir, --jvs-dir, --moe-speech-dir)"
@@ -734,9 +693,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         moe_start = SPEAKER_ID_RANGES["moe-speech"][0]
 
         # moe-speech の話者IDを収集してマップ
-        moe_speakers = sorted(
-            {u.get("speaker_id", 0) for u in moe_utts}
-        )
+        moe_speakers = sorted({u.get("speaker_id", 0) for u in moe_utts})
         moe_speaker_map: dict[int, int] = {}
         for idx, orig_id in enumerate(moe_speakers):
             global_id = moe_start + idx
@@ -748,14 +705,11 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
             global_sid = moe_speaker_map.get(orig_sid)
             if global_sid is None:
                 _LOGGER.warning(
-                    "moe-speech speaker_id %d not in speaker map, "
-                    "skipping utterance",
+                    "moe-speech speaker_id %d not in speaker map, skipping utterance",
                     orig_sid,
                 )
                 continue
-            emb_rel = (
-                f"speaker_embeddings/speaker_{global_sid}.npy"
-            )
+            emb_rel = f"speaker_embeddings/speaker_{global_sid}.npy"
             entry = {
                 "phoneme_ids": utt["phoneme_ids"],
                 "speaker_id": global_sid,
@@ -791,12 +745,8 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
     if args.jvs_dir:
         _LOGGER.info("=== Processing JVS ===")
         jvs_utts = _parse_jvs(args.jvs_dir)
-        jvs_corpus_speaker_ids = [
-            u["corpus_speaker_id"] for u in jvs_utts
-        ]
-        jvs_id_map = _assign_speaker_ids(
-            "jvs", jvs_corpus_speaker_ids
-        )
+        jvs_corpus_speaker_ids = [u["corpus_speaker_id"] for u in jvs_utts]
+        jvs_id_map = _assign_speaker_ids("jvs", jvs_corpus_speaker_ids)
         for spk, gid in jvs_id_map.items():
             speaker_id_map[f"jvs_{spk}"] = gid
 
@@ -805,14 +755,10 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
 
         for utt in jvs_utts:
             global_sid = jvs_id_map[utt["corpus_speaker_id"]]
-            emb_rel = (
-                f"speaker_embeddings/speaker_{global_sid}.npy"
-            )
+            emb_rel = f"speaker_embeddings/speaker_{global_sid}.npy"
 
             # WAVをembedding用に記録
-            jvs_speaker_wavs.setdefault(global_sid, []).append(
-                utt["wav_path"]
-            )
+            jvs_speaker_wavs.setdefault(global_sid, []).append(utt["wav_path"])
 
             # 音声前処理
             audio_norm_path: str | None = None
@@ -827,18 +773,12 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                     continue
                 norm_p, spec_p = result
                 # output_dir からの相対パスに変換
-                audio_norm_path = str(
-                    norm_p.relative_to(output_dir)
-                )
-                audio_spec_path = str(
-                    spec_p.relative_to(output_dir)
-                )
+                audio_norm_path = str(norm_p.relative_to(output_dir))
+                audio_spec_path = str(spec_p.relative_to(output_dir))
 
             # 音素化
-            phoneme_ids, prosody_features = (
-                _phonemize_utterance(
-                    utt["text"], "ja", merged_phoneme_id_map
-                )
+            phoneme_ids, prosody_features = _phonemize_utterance(
+                utt["text"], "ja", merged_phoneme_id_map
             )
 
             entry = {
@@ -872,12 +812,8 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
     if args.libritts_dir:
         _LOGGER.info("=== Processing LibriTTS-R ===")
         libritts_utts = _parse_libritts(args.libritts_dir)
-        libritts_corpus_speaker_ids = [
-            u["corpus_speaker_id"] for u in libritts_utts
-        ]
-        libritts_id_map = _assign_speaker_ids(
-            "libritts", libritts_corpus_speaker_ids
-        )
+        libritts_corpus_speaker_ids = [u["corpus_speaker_id"] for u in libritts_utts]
+        libritts_id_map = _assign_speaker_ids("libritts", libritts_corpus_speaker_ids)
         for spk, gid in libritts_id_map.items():
             speaker_id_map[f"libritts_{spk}"] = gid
 
@@ -885,17 +821,11 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         libritts_speaker_wavs: dict[int, list[Path]] = {}
 
         for i, utt in enumerate(libritts_utts):
-            global_sid = libritts_id_map[
-                utt["corpus_speaker_id"]
-            ]
-            emb_rel = (
-                f"speaker_embeddings/speaker_{global_sid}.npy"
-            )
+            global_sid = libritts_id_map[utt["corpus_speaker_id"]]
+            emb_rel = f"speaker_embeddings/speaker_{global_sid}.npy"
 
             # WAVをembedding用に記録
-            libritts_speaker_wavs.setdefault(
-                global_sid, []
-            ).append(utt["wav_path"])
+            libritts_speaker_wavs.setdefault(global_sid, []).append(utt["wav_path"])
 
             # 音声前処理
             audio_norm_path = None
@@ -909,18 +839,12 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                 if result is None:
                     continue
                 norm_p, spec_p = result
-                audio_norm_path = str(
-                    norm_p.relative_to(output_dir)
-                )
-                audio_spec_path = str(
-                    spec_p.relative_to(output_dir)
-                )
+                audio_norm_path = str(norm_p.relative_to(output_dir))
+                audio_spec_path = str(spec_p.relative_to(output_dir))
 
             # 音素化
-            phoneme_ids, prosody_features = (
-                _phonemize_utterance(
-                    utt["text"], "en", merged_phoneme_id_map
-                )
+            phoneme_ids, prosody_features = _phonemize_utterance(
+                utt["text"], "en", merged_phoneme_id_map
             )
 
             entry = {
@@ -950,9 +874,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
 
         # Embedding抽出
         if onnx_session is not None:
-            _LOGGER.info(
-                "Extracting embeddings for LibriTTS-R..."
-            )
+            _LOGGER.info("Extracting embeddings for LibriTTS-R...")
             _extract_embeddings_for_corpus(
                 session=onnx_session,
                 speaker_wav_map=libritts_speaker_wavs,
@@ -967,9 +889,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         for entry in all_entries:
             json.dump(entry, f, ensure_ascii=True)
             f.write("\n")
-    _LOGGER.info(
-        "Wrote %d entries to %s", len(all_entries), jsonl_path
-    )
+    _LOGGER.info("Wrote %d entries to %s", len(all_entries), jsonl_path)
 
     # ---------------------------------------------------------------- #
     # config.json 生成
@@ -1008,9 +928,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
     # ---------------------------------------------------------------- #
     if args.validate:
         _LOGGER.info("Running validation...")
-        error_count = _validate_dataset(
-            output_dir, merged_phoneme_id_map
-        )
+        error_count = _validate_dataset(output_dir, merged_phoneme_id_map)
         if error_count > 0:
             _LOGGER.error(
                 "Validation failed with %d error(s)",

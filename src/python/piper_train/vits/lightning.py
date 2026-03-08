@@ -178,7 +178,15 @@ class VitsModel(pl.LightningModule):
             full_dataset, [train_set_size, num_test_examples, valid_set_size]
         )
 
-    def forward(self, text, text_lengths, scales, sid=None, prosody_features=None, speaker_embedding=None):
+    def forward(
+        self,
+        text,
+        text_lengths,
+        scales,
+        sid=None,
+        prosody_features=None,
+        speaker_embedding=None,
+    ):
         noise_scale = scales[0]
         length_scale = scales[1]
         noise_scale_w = scales[2]
@@ -260,7 +268,8 @@ class VitsModel(pl.LightningModule):
         return DataLoader(
             self._val_dataset,
             collate_fn=UtteranceCollate(
-                is_multispeaker=self.hparams.num_speakers > 1 or self.hparams.use_zero_shot,
+                is_multispeaker=self.hparams.num_speakers > 1
+                or self.hparams.use_zero_shot,
                 segment_size=self.hparams.segment_size,
             ),
             num_workers=self.hparams.num_workers,
@@ -275,7 +284,8 @@ class VitsModel(pl.LightningModule):
         return DataLoader(
             self._test_dataset,
             collate_fn=UtteranceCollate(
-                is_multispeaker=self.hparams.num_speakers > 1 or self.hparams.use_zero_shot,
+                is_multispeaker=self.hparams.num_speakers > 1
+                or self.hparams.use_zero_shot,
                 segment_size=self.hparams.segment_size,
             ),
             num_workers=self.hparams.num_workers,
@@ -334,7 +344,9 @@ class VitsModel(pl.LightningModule):
             batch.speaker_ids if batch.speaker_ids is not None else None,
             batch.prosody_features if batch.prosody_features is not None else None,
         )
-        speaker_embeddings = batch.speaker_embeddings if batch.speaker_embeddings is not None else None
+        speaker_embeddings = (
+            batch.speaker_embeddings if batch.speaker_embeddings is not None else None
+        )
         (
             y_hat,
             l_length,
@@ -469,7 +481,9 @@ class VitsModel(pl.LightningModule):
             spk_emb = None
             if self.hparams.use_zero_shot:
                 spk_emb = torch.zeros(1, self.hparams.spk_embed_dim, device=self.device)
-            test_audio = self(text, text_lengths, scales, sid=sid, speaker_embedding=spk_emb).detach()
+            test_audio = self(
+                text, text_lengths, scales, sid=sid, speaker_embedding=spk_emb
+            ).detach()
 
             # Scale to make louder in [-1, 1]
             test_audio = test_audio * (1.0 / max(0.01, abs(test_audio.max())))

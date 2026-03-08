@@ -189,7 +189,12 @@ def main() -> None:
     stochastic = args.stochastic
 
     def infer_forward(
-        text, text_lengths, scales, sid=None, prosody_features=None, speaker_embedding=None
+        text,
+        text_lengths,
+        scales,
+        sid=None,
+        prosody_features=None,
+        speaker_embedding=None,
     ):
         """
         Efficient forward function that returns both audio and duration information.
@@ -203,7 +208,9 @@ def main() -> None:
         x, m_p, logs_p, x_mask = model_g.enc_p(text, text_lengths)
 
         if use_zero_shot:
-            g = model_g.spk_proj(speaker_embedding).unsqueeze(-1)  # [b, gin_channels, 1]
+            g = model_g.spk_proj(speaker_embedding).unsqueeze(
+                -1
+            )  # [b, gin_channels, 1]
         elif model_g.n_speakers > 1 and sid is not None:
             g = model_g.emb_g(sid).unsqueeze(-1)
         else:
@@ -275,11 +282,21 @@ def main() -> None:
     # Include all inputs for compatibility
     if use_zero_shot and has_prosody:
         dummy_input = (
-            sequences, sequence_lengths, scales, None, prosody_features, dummy_speaker_embedding
+            sequences,
+            sequence_lengths,
+            scales,
+            None,
+            prosody_features,
+            dummy_speaker_embedding,
         )
     elif use_zero_shot:
         dummy_input = (
-            sequences, sequence_lengths, scales, None, None, dummy_speaker_embedding
+            sequences,
+            sequence_lengths,
+            scales,
+            None,
+            None,
+            dummy_speaker_embedding,
         )
     elif num_speakers > 1 and has_prosody:
         dummy_input = (sequences, sequence_lengths, scales, sid, prosody_features)
