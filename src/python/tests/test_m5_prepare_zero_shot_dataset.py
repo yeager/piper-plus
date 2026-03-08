@@ -12,6 +12,7 @@ M5: prepare_zero_shot_dataset のテスト
 """
 
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -257,12 +258,14 @@ class TestCliHelp:
     def test_help_shows_all_arguments(self):
         """--helpで全引数が表示される"""
         src_python_dir = str(Path(__file__).resolve().parent.parent)
+        env = {**os.environ, "PYTHONUTF8": "1"}
         result = subprocess.run(
             ["python", "-m", "piper_train.prepare_zero_shot_dataset", "--help"],
             check=False,
             capture_output=True,
             text=True,
             cwd=src_python_dir,
+            env=env,
         )
         assert result.returncode == 0
         assert "--libritts-dir" in result.stdout
