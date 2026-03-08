@@ -42,7 +42,7 @@ try:
     import librosa  # noqa: F401
 
     _has_librosa = True
-except ImportError:
+except Exception:
     pass
 
 
@@ -248,12 +248,13 @@ class TestCliHelp:
     @pytest.mark.unit
     def test_help_shows_all_arguments(self):
         """--helpで全引数が表示される"""
+        src_python_dir = str(Path(__file__).resolve().parent.parent)
         result = subprocess.run(
             ["python", "-m", "piper_train.prepare_zero_shot_dataset", "--help"],
             check=False,
             capture_output=True,
             text=True,
-            cwd="/Users/s19447/Documents/piper-plus/src/python",
+            cwd=src_python_dir,
         )
         assert result.returncode == 0
         assert "--libritts-dir" in result.stdout
