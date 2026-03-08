@@ -2,9 +2,9 @@ import numpy as np
 import torch
 
 try:
-    from .core import maximum_path_c  # Cython or numba fallback
+    from .core import maximum_path_c
 except ImportError:
-    from .core import maximum_path_c  # noqa: F811
+    maximum_path_c = None
 
 # Memory threshold for adaptive chunking (t_t * t_s)
 # When matrix size exceeds this, use batch_size=1
@@ -24,6 +24,11 @@ def maximum_path(neg_cent, mask):
     Returns:
         Path tensor [batch, t_t, t_s]
     """
+    if maximum_path_c is None:
+        raise ImportError(
+            "Cython extension 'monotonic_align.core' is not built. "
+            "Run: python piper_train/vits/monotonic_align/setup.py build_ext --inplace"
+        )
     device = neg_cent.device
     dtype = neg_cent.dtype
     batch_size, t_t, t_s = neg_cent.shape
@@ -41,10 +46,7 @@ def maximum_path(neg_cent, mask):
         for i in range(0, batch_size, max_chunk):
             chunk_end = min(i + max_chunk, batch_size)
             chunk_result = _maximum_path_core(
-                neg_cent[i:chunk_end],
-                mask[i:chunk_end],
-                device,
-                dtype
+                neg_cent[i:chunk_end], mask[i:chunk_end], device, dtype
             )
             results.append(chunk_result)
         return torch.cat(results, dim=0)

@@ -297,10 +297,19 @@ def _process_audio(
     Returns:
         (norm_path, spec_path) on success, None on failure.
     """
-    from piper_train.norm_audio import (  # noqa: PLC0415
-        cache_norm_audio,
-        make_silence_detector,
-    )
+    try:
+        from piper_train.norm_audio import (  # noqa: PLC0415
+            cache_norm_audio,
+            make_silence_detector,
+        )
+    except Exception:
+        _LOGGER.warning(
+            "Failed to import norm_audio (librosa/numba may be unavailable), "
+            "skipping audio processing for %s",
+            wav_path,
+            exc_info=True,
+        )
+        return None
 
     # SileroVADの検出器はスレッドセーフでないため毎回生成
     # (実際にはシングルプロセスなので問題ない)
