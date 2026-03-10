@@ -97,10 +97,8 @@ class VitsModel(pl.LightningModule):
         )
 
         # Fix gin_channels BEFORE save_hyperparameters() so the correct value is saved
-        if use_zero_shot and (gin_channels <= 0):
+        if (use_zero_shot or num_speakers > 1) and (gin_channels <= 0):
             gin_channels = 768
-        elif (num_speakers > 1) and (gin_channels <= 0):
-            gin_channels = 512
 
         self.save_hyperparameters()
 
@@ -478,12 +476,20 @@ class VitsModel(pl.LightningModule):
                 else None
             )
             # Zero-shot mode: use a default zero embedding for validation
-            spk_emb = None
             if self.hparams.use_zero_shot:
                 spk_emb = torch.zeros(1, self.hparams.spk_embed_dim, device=self.device)
-            test_audio = self(
-                text, text_lengths, scales, sid=sid, speaker_embedding=spk_emb
-            ).detach()
+                audio = self.model_g.infer(
+                    text, text_lengths, scales, sid=sid, speaker_embedding=spk_emb
+                )[0]
+            elif self.hparams.num_speakers > 1:
+                audio = self.model_g.infer(
+                    text, text_lengths, scales, sid=sid
+                )[0]
+            else:
+                audio = self.model_g.infer(
+                    text, text_lengths, scales
+                )[0]
+            test_audio = audio.detach()
 
             # Scale to make louder in [-1, 1]
             test_audio = test_audio * (1.0 / max(0.01, abs(test_audio.max())))

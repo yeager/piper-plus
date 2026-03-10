@@ -171,6 +171,11 @@ def main():
         default=0.5,
         help="WavLM discriminator loss weight (default: 0.5)",
     )
+    parser.add_argument(
+        "--no-wavlm",
+        action="store_true",
+        help="Disable WavLM Discriminator (faster training, recommended for pre-training)",
+    )
     # Trainer arguments
     parser.add_argument("--accelerator", default="gpu", help="Accelerator to use")
     parser.add_argument("--devices", type=int, default=1, help="Number of devices")
@@ -233,10 +238,13 @@ def main():
     _LOGGER.info(f"Training with {num_gpus} GPU(s)")
     _LOGGER.info(f"Using precision: {args.precision}")
 
-    # Log WavLM Discriminator status (always enabled)
-    _LOGGER.info(
-        f"WavLM Discriminator enabled: model={args.wavlm_model_name}, weight={args.c_wavlm}"
-    )
+    # WavLM Discriminator status
+    if args.no_wavlm:
+        _LOGGER.info("WavLM Discriminator disabled (--no-wavlm)")
+    else:
+        _LOGGER.info(
+            f"WavLM Discriminator enabled: model={args.wavlm_model_name}, weight={args.c_wavlm}"
+        )
 
     # Log Zero-Shot TTS status
     if getattr(args, "zero_shot", False):
@@ -381,8 +389,12 @@ def main():
             dict_args.get("spk_embed_dim", 192),
         )
 
-    # マルチスピーカーモデルの場合、gin_channelsを768に設定（品質向上のため）
-    if num_speakers > 1 and "gin_channels" not in dict_args:
+    # --no-wavlm フラグの処理
+    if dict_args.pop("no_wavlm", False):
+        dict_args["use_wavlm_discriminator"] = False
+
+    # マルチスピーカーモデルの場合も gin_channels=768 に統一
+    if num_speakers > 1 and dict_args.get("gin_channels", 0) <= 0:
         dict_args["gin_channels"] = 768
 
     # num_workers自動調整機能を削除

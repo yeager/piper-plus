@@ -828,10 +828,10 @@ class SynthesizerTrn(nn.Module):
                 dp_in_channels, 256, 3, 0.5, gin_channels=gin_channels
             )
 
+        if n_speakers > 1:
+            self.emb_g = nn.Embedding(n_speakers, gin_channels)
         if use_zero_shot:
             self.spk_proj = nn.Linear(spk_embed_dim, gin_channels)
-        elif n_speakers > 1:
-            self.emb_g = nn.Embedding(n_speakers, gin_channels)
 
     def _prepare_prosody_input(self, x, x_mask, prosody_features):
         """Prepare encoder output with prosody features for duration predictor.
@@ -882,15 +882,14 @@ class SynthesizerTrn(nn.Module):
         speaker_embedding=None,
     ):
         x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths)
-        if self.use_zero_shot:
-            if speaker_embedding is None:
-                raise ValueError(
-                    "speaker_embedding is required when use_zero_shot=True"
-                )
-            g = self.spk_proj(speaker_embedding).unsqueeze(-1)  # [b, gin_channels, 1]
-        elif self.n_speakers > 1:
-            assert sid is not None, "Missing speaker id"
-            g = self.emb_g(sid).unsqueeze(-1)  # [b, gin_channels, 1]
+        if speaker_embedding is not None and hasattr(self, "spk_proj"):
+            g = self.spk_proj(speaker_embedding).unsqueeze(-1)
+        elif sid is not None and hasattr(self, "emb_g"):
+            g = self.emb_g(sid).unsqueeze(-1)
+        elif self.n_speakers > 1 or self.use_zero_shot:
+            raise ValueError(
+                "Either speaker_embedding or sid must be provided for multi-speaker/zero-shot model"
+            )
         else:
             g = None
 
@@ -966,15 +965,14 @@ class SynthesizerTrn(nn.Module):
         speaker_embedding=None,
     ):
         x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths)
-        if self.use_zero_shot:
-            if speaker_embedding is None:
-                raise ValueError(
-                    "speaker_embedding is required when use_zero_shot=True"
-                )
-            g = self.spk_proj(speaker_embedding).unsqueeze(-1)  # [b, gin_channels, 1]
-        elif self.n_speakers > 1:
-            assert sid is not None, "Missing speaker id"
-            g = self.emb_g(sid).unsqueeze(-1)  # [b, gin_channels, 1]
+        if speaker_embedding is not None and hasattr(self, "spk_proj"):
+            g = self.spk_proj(speaker_embedding).unsqueeze(-1)
+        elif sid is not None and hasattr(self, "emb_g"):
+            g = self.emb_g(sid).unsqueeze(-1)
+        elif self.n_speakers > 1 or self.use_zero_shot:
+            raise ValueError(
+                "Either speaker_embedding or sid must be provided for multi-speaker/zero-shot model"
+            )
         else:
             g = None
 

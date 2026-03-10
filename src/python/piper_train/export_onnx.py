@@ -115,6 +115,12 @@ def main() -> None:
         action="store_true",
         help="Disable EMA weight application",
     )
+    parser.add_argument(
+        "--export-mode",
+        choices=["auto", "zero-shot", "sid"],
+        default="auto",
+        help="Export mode: auto=detect from model, zero-shot=speaker_embedding input, sid=speaker ID input",
+    )
     args = parser.parse_args()
 
     if args.no_ema:
@@ -182,9 +188,29 @@ def main() -> None:
     # Check if model uses prosody features
     has_prosody = getattr(model_g, "prosody_dim", 0) > 0
 
-    # Check if model uses zero-shot speaker embedding
-    use_zero_shot = getattr(model_g, "use_zero_shot", False)
+    # Determine export mode
+    model_use_zero_shot = getattr(model_g, "use_zero_shot", False)
+    if args.export_mode == "auto":
+        use_zero_shot = model_use_zero_shot
+    elif args.export_mode == "zero-shot":
+        use_zero_shot = True
+    else:  # "sid"
+        use_zero_shot = False
     spk_embed_dim = getattr(model_g, "spk_embed_dim", 192)
+
+    # Validate that the model supports the requested export mode
+    if not use_zero_shot and num_speakers > 1:
+        if not hasattr(model_g, "emb_g"):
+            raise ValueError(
+                "Cannot export in 'sid' mode: model does not have speaker embedding table (emb_g). "
+                "Model was trained without multi-speaker support."
+            )
+    if use_zero_shot:
+        if not hasattr(model_g, "spk_proj"):
+            raise ValueError(
+                "Cannot export in 'zero-shot' mode: model does not have speaker projection (spk_proj). "
+                "Model was trained without zero-shot support."
+            )
 
     stochastic = args.stochastic
 
