@@ -178,12 +178,11 @@ class VitsModel(pl.LightningModule):
         # Track whether torch.compile has been applied
         self._compiled = False
 
-    def setup(self, stage=None):
-        """Apply torch.compile after model is placed on the correct device.
+    def on_train_start(self):
+        """Apply torch.compile after checkpoint restoration.
 
-        Compiles the Generator decoder (HiFi-GAN) and the MultiPeriodDiscriminator
-        for training speedup on PyTorch 2.x. Falls back to eager mode gracefully
-        if torch.compile is unavailable or fails.
+        Called after setup() and checkpoint loading, so state_dict keys
+        won't have _orig_mod. prefix conflicts during checkpoint restore.
         """
         if self._compiled:
             return
@@ -198,10 +197,10 @@ class VitsModel(pl.LightningModule):
         # Compile Generator decoder (HiFi-GAN) — the most compute-intensive part
         try:
             self.model_g.dec = torch.compile(
-                self.model_g.dec, mode="reduce-overhead"
+                self.model_g.dec, mode="default"
             )
             _LOGGER.info(
-                "torch.compile applied to Generator decoder (mode=reduce-overhead)"
+                "torch.compile applied to Generator decoder (mode=default)"
             )
         except Exception as e:
             _LOGGER.warning(
@@ -211,11 +210,11 @@ class VitsModel(pl.LightningModule):
         # Compile MultiPeriodDiscriminator
         try:
             self.model_d = torch.compile(
-                self.model_d, mode="reduce-overhead"
+                self.model_d, mode="default"
             )
             _LOGGER.info(
                 "torch.compile applied to MultiPeriodDiscriminator "
-                "(mode=reduce-overhead)"
+                "(mode=default)"
             )
         except Exception as e:
             _LOGGER.warning(
@@ -705,11 +704,5 @@ class VitsModel(pl.LightningModule):
             type=int,
             default=min(16, os.cpu_count()),
             help="Number of workers for DataLoader",
-        )
-        parser.add_argument(
-            "--d-update-interval",
-            type=int,
-            default=2,
-            help="Discriminator update interval (D:G = 1:N). Default: 2",
         )
         return parent_parser
