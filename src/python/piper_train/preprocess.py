@@ -65,7 +65,11 @@ _DIR = Path(__file__).parent
 _VERSION_FILE = _DIR / "VERSION"
 if not _VERSION_FILE.is_file():
     _VERSION_FILE = _DIR.parent.parent.parent / "VERSION"
-_VERSION = _VERSION_FILE.read_text(encoding="utf-8").strip() if _VERSION_FILE.is_file() else "0.0.0"
+_VERSION = (
+    _VERSION_FILE.read_text(encoding="utf-8").strip()
+    if _VERSION_FILE.is_file()
+    else "0.0.0"
+)
 _LOGGER = logging.getLogger("preprocess")
 
 

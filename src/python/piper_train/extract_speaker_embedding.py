@@ -228,7 +228,9 @@ def extract_from_dataset(
                 _LOGGER.warning("File not found, skipping: %s", pt_path)
                 continue
             try:
-                audio_tensor = torch.load(pt_path, weights_only=True, map_location="cpu")
+                audio_tensor = torch.load(
+                    pt_path, weights_only=True, map_location="cpu"
+                )
                 num_samples = audio_tensor.shape[-1]
                 duration = num_samples / source_sr
                 if duration >= min_duration:
@@ -280,6 +282,7 @@ def extract_from_dataset(
 # Per-utterance extraction with DataLoader + batch ONNX inference
 # ---------------------------------------------------------------------------
 
+
 class _FbankDataset(torch.utils.data.Dataset):
     """DataLoader用Dataset: PTファイルからFbank特徴量を並列抽出する。
 
@@ -309,7 +312,9 @@ class _FbankDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx: int) -> tuple[int, torch.Tensor, str, bool]:
         entry_idx, pt_path, stem = self.items[idx]
         try:
-            audio_tensor = torch.load(pt_path, weights_only=True, map_location="cpu", mmap=True)
+            audio_tensor = torch.load(
+                pt_path, weights_only=True, map_location="cpu", mmap=True
+            )
             if audio_tensor.dim() == 1:
                 audio_tensor = audio_tensor.unsqueeze(0)
             if self.resampler is not None:
@@ -477,7 +482,9 @@ def extract_per_utterance(
         norms = np.maximum(norms, 1e-8)
         embeddings_batch = embeddings_batch / norms
 
-        for j, (entry_idx, stem, valid) in enumerate(zip(indices, stems, valids, strict=False)):
+        for j, (entry_idx, stem, valid) in enumerate(
+            zip(indices, stems, valids, strict=False)
+        ):
             if not valid:
                 fail += 1
                 continue
@@ -485,7 +492,9 @@ def extract_per_utterance(
             npy_path = emb_dir / f"{stem}.npy"
             np.save(str(npy_path), embeddings_batch[j])
 
-            entries[entry_idx]["speaker_embedding_path"] = f"speaker_embeddings/{stem}.npy"
+            entries[entry_idx]["speaker_embedding_path"] = (
+                f"speaker_embeddings/{stem}.npy"
+            )
             success += 1
 
         if (batch_idx + 1) % 50 == 0 or batch_idx + 1 == total_batches:
@@ -582,13 +591,17 @@ def main():
     if (args.audio or args.audio_dir) and not args.output:
         parser.error("--output is required with --audio or --audio-dir")
     if args.dataset_dir and not args.per_utterance and not args.output_dir:
-        parser.error("--output-dir is required with --dataset-dir (unless --per-utterance)")
+        parser.error(
+            "--output-dir is required with --dataset-dir (unless --per-utterance)"
+        )
 
     # ONNX session (GPU優先、なければCPU)
     import onnxruntime  # noqa: PLC0415
 
     sess_options = onnxruntime.SessionOptions()
-    sess_options.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_EXTENDED
+    sess_options.graph_optimization_level = (
+        onnxruntime.GraphOptimizationLevel.ORT_ENABLE_EXTENDED
+    )
     sess_options.enable_mem_reuse = True
     sess_options.enable_mem_pattern = True
 
