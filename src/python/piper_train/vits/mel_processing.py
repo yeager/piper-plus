@@ -115,7 +115,6 @@ def mel_spectrogram_torch(
         hann_window[wnsize_dtype_device] = torch.hann_window(win_size).type_as(y)
 
     # cuFFT does not support BFloat16; cast to float32 for STFT
-    orig_dtype = y.dtype
     y = y.float()
 
     y = torch.nn.functional.pad(

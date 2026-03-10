@@ -94,7 +94,7 @@ class TestZeroShotInit:
 
     @pytest.mark.unit
     def test_zero_shot_with_multi_speakers(self):
-        """use_zero_shot=True + n_speakers>1 でも spk_proj が作られ emb_g は作られない"""
+        """use_zero_shot=True + n_speakers>1 で spk_proj と emb_g の両方が作られる (Dual-Mode)"""
         model = SynthesizerTrn(
             **MODEL_PARAMS,
             n_speakers=20,
@@ -103,7 +103,7 @@ class TestZeroShotInit:
             spk_embed_dim=192,
         )
         assert hasattr(model, 'spk_proj')
-        assert not hasattr(model, 'emb_g')
+        assert hasattr(model, 'emb_g')
 
     @pytest.mark.unit
     def test_use_zero_shot_attribute(self):

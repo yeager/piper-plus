@@ -33,6 +33,7 @@ import numpy as np
 import torch
 import torchaudio
 
+
 if TYPE_CHECKING:
     import onnxruntime
 
@@ -331,7 +332,7 @@ def _collate_fbanks(
     batch: list[tuple[int, torch.Tensor, str, bool]],
 ) -> tuple[list[int], np.ndarray, list[str], list[bool]]:
     """可変長Fbankをゼロパディングしてバッチ化する。"""
-    indices, fbanks, stems, valids = zip(*batch)
+    indices, fbanks, stems, valids = zip(*batch, strict=False)
     max_t = max(f.shape[0] for f in fbanks)
     padded = torch.zeros(len(fbanks), max_t, 80)
     for i, f in enumerate(fbanks):
@@ -476,7 +477,7 @@ def extract_per_utterance(
         norms = np.maximum(norms, 1e-8)
         embeddings_batch = embeddings_batch / norms
 
-        for j, (entry_idx, stem, valid) in enumerate(zip(indices, stems, valids)):
+        for j, (entry_idx, stem, valid) in enumerate(zip(indices, stems, valids, strict=False)):
             if not valid:
                 fail += 1
                 continue
