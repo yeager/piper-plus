@@ -4,8 +4,8 @@ import torch
 from torch import nn
 from torch.nn import Conv1d, Conv2d, ConvTranspose1d, functional as F
 from torch.nn.utils import spectral_norm
-from torch.nn.utils.parametrize import remove_parametrizations
 from torch.nn.utils.parametrizations import weight_norm
+from torch.nn.utils.parametrize import remove_parametrizations
 
 from . import attentions, commons, modules, monotonic_align
 from .commons import get_padding, init_weights

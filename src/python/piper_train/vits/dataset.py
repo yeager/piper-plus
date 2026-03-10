@@ -138,9 +138,7 @@ class PiperDataset(Dataset):
                         spec_path, map_location="cpu", weights_only=True
                     )
                 else:
-                    raise FileNotFoundError(
-                        f"Spectrogram cache not found: {spec_path}"
-                    )
+                    raise FileNotFoundError(f"Spectrogram cache not found: {spec_path}")
 
                 # Convert prosody_features to tensor if available
                 prosody_tensor = None

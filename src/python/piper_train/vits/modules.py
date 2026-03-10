@@ -3,8 +3,8 @@ import math
 import torch
 from torch import nn
 from torch.nn import Conv1d, functional as F
-from torch.nn.utils.parametrize import remove_parametrizations
 from torch.nn.utils.parametrizations import weight_norm
+from torch.nn.utils.parametrize import remove_parametrizations
 
 from .commons import fused_add_tanh_sigmoid_multiply, get_padding, init_weights
 from .transforms import piecewise_rational_quadratic_transform

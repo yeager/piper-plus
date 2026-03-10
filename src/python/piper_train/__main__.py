@@ -226,11 +226,15 @@ def main():
         "--max_epochs", type=int, default=1000, help="Maximum number of epochs"
     )
     parser.add_argument(
-        "--val-every-n-epochs", type=int, default=5,
+        "--val-every-n-epochs",
+        type=int,
+        default=5,
         help="Run validation every N epochs",
     )
     parser.add_argument(
-        "--limit-val-batches", type=int, default=50,
+        "--limit-val-batches",
+        type=int,
+        default=50,
         help="Maximum number of validation batches",
     )
     parser.add_argument(
@@ -330,12 +334,14 @@ def main():
         )
 
     # EarlyStopping callback
-    callbacks.append(EarlyStopping(
-        monitor="val_loss",
-        patience=20,
-        mode="min",
-        verbose=True,
-    ))
+    callbacks.append(
+        EarlyStopping(
+            monitor="val_loss",
+            patience=20,
+            mode="min",
+            verbose=True,
+        )
+    )
 
     # EMA is enabled by default
     if not args.no_ema:
@@ -385,7 +391,9 @@ def main():
         trainer_kwargs["plugins"] = [AsyncCheckpointIO()]
         _LOGGER.info("AsyncCheckpointIO enabled for non-blocking checkpoint saves")
     else:
-        _LOGGER.info("AsyncCheckpointIO not available, using default synchronous checkpoint IO")
+        _LOGGER.info(
+            "AsyncCheckpointIO not available, using default synchronous checkpoint IO"
+        )
 
     # Multi-GPU DDP optimization
     # Use DDPStrategy with gradient_as_bucket_view=True for memory efficiency
@@ -537,12 +545,14 @@ def main():
                 )
 
             # EarlyStopping callback
-            callbacks.append(EarlyStopping(
-                monitor="val_loss",
-                patience=20,
-                mode="min",
-                verbose=True,
-            ))
+            callbacks.append(
+                EarlyStopping(
+                    monitor="val_loss",
+                    patience=20,
+                    mode="min",
+                    verbose=True,
+                )
+            )
 
             # EMA is enabled by default
             if not args.no_ema:

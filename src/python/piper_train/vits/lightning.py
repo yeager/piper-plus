@@ -196,12 +196,8 @@ class VitsModel(pl.LightningModule):
 
         # Compile Generator decoder (HiFi-GAN) — the most compute-intensive part
         try:
-            self.model_g.dec = torch.compile(
-                self.model_g.dec, mode="default"
-            )
-            _LOGGER.info(
-                "torch.compile applied to Generator decoder (mode=default)"
-            )
+            self.model_g.dec = torch.compile(self.model_g.dec, mode="default")
+            _LOGGER.info("torch.compile applied to Generator decoder (mode=default)")
         except Exception as e:
             _LOGGER.warning(
                 "torch.compile failed for Generator decoder, using eager mode: %s", e
@@ -209,12 +205,9 @@ class VitsModel(pl.LightningModule):
 
         # Compile MultiPeriodDiscriminator
         try:
-            self.model_d = torch.compile(
-                self.model_d, mode="default"
-            )
+            self.model_d = torch.compile(self.model_d, mode="default")
             _LOGGER.info(
-                "torch.compile applied to MultiPeriodDiscriminator "
-                "(mode=default)"
+                "torch.compile applied to MultiPeriodDiscriminator (mode=default)"
             )
         except Exception as e:
             _LOGGER.warning(
@@ -594,9 +587,7 @@ class VitsModel(pl.LightningModule):
             # WavLM Discriminator loss (optional)
             if self.model_d_wavlm is not None:
                 if self._cached_y_d_hat_r_wlm is not None:
-                    _, y_d_hat_g_wlm, _, _ = self.model_d_wavlm(
-                        y, y_hat_detached
-                    )
+                    _, y_d_hat_g_wlm, _, _ = self.model_d_wavlm(y, y_hat_detached)
                     y_d_hat_r_wlm = self._cached_y_d_hat_r_wlm
                 else:
                     y_d_hat_r_wlm, y_d_hat_g_wlm, _, _ = self.model_d_wavlm(
