@@ -329,7 +329,53 @@ uv run python -m piper_train.tools.add_prosody_features --input-dataset ... --ou
 
 ## 学習設定
 
-### 推奨設定 (20話者、L4 GPU 16GB × 4、WavLM有効)
+### 推奨設定 (20話者、RTX 6000 Ada 48GB × 1、WavLM有効)
+
+```bash
+uv run python -m piper_train \
+  --dataset-dir /home/shadeform/data/piper/dataset-moe-speech-20speakers \
+  --prosody-dim 16 \
+  --accelerator gpu --devices 1 \
+  --precision bf16-mixed \
+  --max_epochs 200 \
+  --batch-size 32 \
+  --samples-per-speaker 4 \
+  --checkpoint-epochs 2 \
+  --quality medium \
+  --base_lr 2e-4 \
+  --ema-decay 0.9995 \
+  --num-workers 8 \
+  --default_root_dir /home/shadeform/data/piper/output-moe-speech-20speakers
+```
+
+### V100 → RTX 6000 Ada 移行時の変更点
+
+| パラメータ | V100 (16GB × 4) | RTX 6000 Ada (48GB × 1) | 理由 |
+|---|---|---|---|
+| `--devices` | 4 | **1** | シングルGPU |
+| `--precision` | `16-mixed` | **`bf16-mixed`** | Ada LoveaceはBF16ネイティブ対応、FP16より数値安定 |
+| `--batch-size` | 12 | **32** | 48GB VRAMで大幅増加可能（推定使用量 35-40GB） |
+| `--samples-per-speaker` | 2 | **4** | メモリ余裕でDuration Predictor安定化 |
+| `--num-workers` | 0 | **8** | シングルGPU＋12コアCPUで効率化 |
+| `--no-pin-memory` | あり | **削除** | シングルGPUではpin_memory=Trueが高速 |
+| `--disable_auto_lr_scaling` | あり | **削除** | シングルGPUでは自動スケーリング不発動 |
+| `--checkpoint-epochs` | 1 | **2** | 学習高速化によりストレージ節約 |
+| NCCL環境変数 | 必須 | **不要** | マルチGPU通信不要 |
+
+### GPU環境別の特性
+
+| 項目 | V100 (Volta) | RTX 6000 Ada (Ada Lovelace) |
+|---|---|---|
+| VRAM | 16GB | 48GB |
+| Tensor Core | 1st Gen | 4th Gen |
+| BF16 | 非対応 | ネイティブ対応 |
+| TF32 | 非対応 | デフォルト有効 |
+| Compute Capability | 7.0 | 8.9 |
+
+### 旧設定 (20話者、L4/V100 GPU 16GB × 4、WavLM有効)
+
+<details>
+<summary>V100/L4マルチGPU向け設定（参考）</summary>
 
 ```bash
 NCCL_DEBUG=WARN NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1 \
@@ -344,22 +390,22 @@ uv run python -m piper_train \
   --default_root_dir /data/piper/output-moe-speech-20speakers-wavlm
 ```
 
-**注意:** WavLMはデフォルトで有効。GPUメモリ増加のため`batch-size`を12に削減。
+**NCCL環境変数（マルチGPU必須）:**
+```bash
+NCCL_DEBUG=WARN
+NCCL_P2P_DISABLE=1
+NCCL_IB_DISABLE=1
+```
+
+</details>
 
 ### 話者数別の推奨設定
 
 | 話者数 | batch_size | samples_per_speaker | 実効バッチ | 備考 |
 |-------|------------|---------------------|-----------|------|
 | 5話者 | 20 | 4 | 20 | ✅ 検証済み |
-| **20話者** | **20** | **2** | **40** | **✅ 検証済み** |
-
-### NCCL環境変数（マルチGPU必須）
-
-```bash
-NCCL_DEBUG=WARN
-NCCL_P2P_DISABLE=1
-NCCL_IB_DISABLE=1
-```
+| **20話者** | **32** | **4** | **32** | RTX 6000 Ada推奨 |
+| 20話者 (旧) | 20 | 2 | 40 | V100 × 4 検証済み |
 
 ---
 

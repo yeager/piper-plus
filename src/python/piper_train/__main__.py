@@ -124,12 +124,7 @@ def main():
         default=2e-4,
         help="Base learning rate for single GPU training",
     )
-    # Zero-Shot TTS arguments
-    parser.add_argument(
-        "--zero-shot",
-        action="store_true",
-        help="Enable zero-shot TTS mode (use speaker embeddings instead of speaker IDs)",
-    )
+    # Zero-Shot TTS arguments (automatically enabled for multi-speaker models)
     parser.add_argument(
         "--spk-embed-dim",
         type=int,
@@ -246,15 +241,6 @@ def main():
             f"WavLM Discriminator enabled: model={args.wavlm_model_name}, weight={args.c_wavlm}"
         )
 
-    # Log Zero-Shot TTS status
-    if getattr(args, "zero_shot", False):
-        _LOGGER.info(
-            "Zero-Shot TTS: spk_embed_dim=%d, c_spk=%.1f, c_dino=%.2f",
-            args.spk_embed_dim,
-            args.c_spk,
-            args.c_dino,
-        )
-
     # Initialize scaled_lr
     scaled_lr = args.base_lr
 
@@ -284,6 +270,15 @@ def main():
         num_symbols = int(config["num_symbols"])
         num_speakers = int(config["num_speakers"])
         sample_rate = int(config["audio"]["sample_rate"])
+
+    # Log Zero-Shot TTS status (multi-speaker ならデフォルト有効)
+    if num_speakers > 1:
+        _LOGGER.info(
+            "Zero-Shot TTS (default): spk_embed_dim=%d, c_spk=%.1f, c_dino=%.2f",
+            args.spk_embed_dim,
+            args.c_spk,
+            args.c_dino,
+        )
 
     # Setup callbacks
     callbacks = []
@@ -379,14 +374,11 @@ def main():
         dict_args["upsample_initial_channel"] = 512
         dict_args["upsample_kernel_sizes"] = (16, 16, 4, 4)
 
-    # Zero-Shot TTS: argparse の zero_shot を use_zero_shot に変換
-    if dict_args.pop("zero_shot", False):
+    # Zero-Shot TTS: マルチスピーカーならデフォルト有効（フラグ不要）
+    if num_speakers > 1:
         dict_args["use_zero_shot"] = True
-        # Zero-Shot モードでも gin_channels=512 を使用
-        # 768ではガビガビ音が発生する問題あり (feat/multilingual-phonemizer で検証済み)
-        dict_args["gin_channels"] = 512
         _LOGGER.info(
-            "Zero-Shot TTS mode enabled: gin_channels=512, spk_embed_dim=%d",
+            "Zero-Shot TTS enabled (default for multi-speaker): gin_channels=512, spk_embed_dim=%d",
             dict_args.get("spk_embed_dim", 192),
         )
 

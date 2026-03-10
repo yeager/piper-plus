@@ -78,8 +78,8 @@ class VitsModel(pl.LightningModule):
         num_test_examples: int = 5,
         validation_split: float = 0.1,
         max_phoneme_ids: int | None = None,
-        # Zero-shot TTS
-        use_zero_shot: bool = False,
+        # Zero-shot TTS (enabled by default for multi-speaker models)
+        use_zero_shot: bool = True,
         spk_embed_dim: int = 192,
         c_spk: float = 9.0,
         c_dino: float = 0.1,
