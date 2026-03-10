@@ -1,9 +1,9 @@
 # Zero-Shot TTS 実装計画書
 
 **作成日**: 2026-03-07
-**最終更新**: 2026-03-08
+**最終更新**: 2026-03-10
 **ブランチ**: `feat/zero-shot-tts`
-**実装状態**: M0-M4 完了 (M5 未着手)
+**実装状態**: M0-M5 全完了 (学習準備中)
 **前提ドキュメント**: [zero-shot-tts-research.md](./zero-shot-tts-research.md)
 
 ---
@@ -87,7 +87,7 @@
   [Fbank特徴抽出 (80dim, 25ms窓, 10msホップ)]
     |
     v
-  [CAM++ Speaker Encoder (ONNX, 28MB)]  ← 別ONNXモデル、推論時不使用
+  [CAM++ Speaker Encoder (ONNX, 27MB)]  ← 別ONNXモデル、推論時不使用
     |
     v
   speaker_embedding (float32, 192dim, L2正規化済み)
@@ -122,23 +122,31 @@
 
 ### 2.2 設計の核心
 
-**Speaker Encoderを推論パイプラインから完全に分離する。**
+**Dual-Mode Speaker Conditioning: emb_g (nn.Embedding) と spk_proj (nn.Linear) を同一モデルに共存させる。**
 
-- **学習時**: CAM++ Speaker Encoderをモデル内に内蔵し、参照音声からembeddingを動的計算
-- **ONNXエクスポート時**: CAM++を除外し、事前計算済みembeddingを直接入力する構造にエクスポート
-- **推論時**: `.npy`ファイルから192次元embeddingを読み込み、ONNXモデルに入力
+> **注: 実装方針変更 (2026-03-10)**
+> 当初計画ではCAM++をモデル内に内蔵して学習時に動的計算する方針だったが、
+> 実際の実装では**per-utterance事前抽出方式**を採用した。CAM++ ONNX による
+> embedding抽出を学習前にオフラインで実行し、dataset.jsonl に
+> `speaker_embedding_path` として記録する。学習時はdataset.pyが `.npy` から
+> embeddingを読み込み、`spk_proj` で射影する。
+
+- **学習時**: 事前計算済みspeaker embeddingを`.npy`ファイルから読み込み、`spk_proj`で`gin_channels`に射影。`emb_g`は従来のspeaker IDによる条件付けに使用
+- **ONNXエクスポート時**: `--export-mode {auto, zero-shot, sid}` でエクスポートモードを選択。`zero-shot`モードでは`spk_proj`経路のみ、`sid`モードでは`emb_g`経路のみをエクスポート
+- **推論時**: zero-shotモデルでは`.npy`ファイルから192次元embeddingを読み込み入力、sidモデルではspeaker IDを入力
 
 この設計により:
+- 同一チェックポイントからsidモデルとzero-shotモデルの両方をエクスポート可能
 - TTSモデル本体のONNX計算グラフは、Embedding Gather → Linear射影への変更以外は**完全に同一**
 - 推論速度への影響は**実質ゼロ**（<1ms）
 
 ### 2.3 nn.Embedding vs 外部embedding の速度同一性
 
 ```
-現在:   sid (int64) → [Gather: emb_g.weight] → g [1, gin_channels, 1]   ← 数μs
-変更後: spk_emb (float32, 192) → [Linear: 192→gin_channels] → g [1, gin_channels, 1]  ← 数μs
+sidモード:       sid (int64) → [Gather: emb_g.weight] → g [1, 512, 1]   ← 数μs
+zero-shotモード: spk_emb (float32, 192) → [Linear: 192→512] → g [1, 512, 1]  ← 数μs
 
-差分: Linear(192, gin_channels) の演算コスト = 192 * gin_channels の行列乗算 ≈ 数μs
+差分: Linear(192, 512) の演算コスト = 192 * 512 の行列乗算 ≈ 数μs
 全体推論時間 (150-310ms) に対して 0.001% 未満 → 実質ゼロ
 ```
 
@@ -155,7 +163,7 @@ Coqui TTS (YourTTS) が `nn.Embedding` (speaker_id方式) と `d_vector` (外部
 | モデル | CAM++ (Context-Aware Masking) |
 | 出力次元 | 192 |
 | パラメータ数 | 7.2M |
-| ONNXサイズ | 28MB (INT8量子化: ~8MB) |
+| ONNXサイズ | 27MB (INT8量子化: ~8MB) |
 | EER (VoxCeleb1-O) | 0.73% |
 | CPU推論 (5秒音声) | ~30-40ms |
 | ライセンス | Apache-2.0 |
@@ -175,17 +183,21 @@ Coqui TTS (YourTTS) が `nn.Embedding` (speaker_id方式) と `d_vector` (外部
 
 ### 3.2 次元射影の設計
 
-CAM++出力（192次元）とPiperの`gin_channels`（768）が不一致のため、線形射影層を追加:
+CAM++出力（192次元）とPiperの`gin_channels`（512）が不一致のため、線形射影層を追加:
+
+> **注: gin_channels=512に変更 (2026-03-10)**
+> 当初計画ではgin_channels=768を想定していたが、768ではガビガビ音（音声品質の劣化）が
+> 発生することが判明し、512に変更した。この値はlightning.pyの`__init__`で自動設定される。
 
 ```python
 # models.py SynthesizerTrn.__init__
-self.spk_proj = nn.Linear(spk_embed_dim, gin_channels)  # 192 → 768
+self.spk_proj = nn.Linear(spk_embed_dim, gin_channels)  # 192 → 512
 
 # 使用時
-g = self.spk_proj(speaker_embedding).unsqueeze(-1)  # [B, 768, 1]
+g = self.spk_proj(speaker_embedding).unsqueeze(-1)  # [B, 512, 1]
 ```
 
-**射影層のパラメータ数**: 192 * 768 + 768 = 148,224 (~0.15M) → 無視できるサイズ
+**射影層のパラメータ数**: 192 * 512 + 512 = 98,816 (~0.10M) → 無視できるサイズ
 
 ### 3.3 Embedding正規化
 
@@ -228,7 +240,7 @@ emb_avg = emb_avg / np.linalg.norm(emb_avg)  # 再正規化
 | **`speaker_embedding`** | **float32** | **`[B, 192]`** | **事前計算済みSpeaker Embedding** |
 | `prosody_features` | int64 | `[B, T_phoneme, 3]` | A1/A2/A3 (prosody有効時) |
 
-**変更点**: `sid` (int64, scalar) → `speaker_embedding` (float32, 192dim)
+**変更点**: `--export-mode` で切り替え。sidモードでは `sid` (int64) 入力、zero-shotモードでは `speaker_embedding` (float32, 192dim) 入力
 
 ### 4.2 ONNXグラフ内の処理
 
@@ -251,13 +263,19 @@ g [B, gin_channels, 1]
 
 ### 4.3 モデルサイズの影響
 
+> **注: gin_channels=512に更新 (2026-03-10)**
+
 | コンポーネント | パラメータ数 | ONNXサイズ増加 |
 |--------------|------------|---------------|
-| spk_proj (192→768) | ~0.15M | ~0.6MB |
-| emb_g (20話者×768) 削除 | -0.015M | -0.06MB |
-| **純増** | **~0.13M** | **~0.5MB** |
+| spk_proj (192→512) | ~0.10M | ~0.4MB |
+| emb_g (20話者×512) — Dual-Modeでは削除されない | 0 | 0 |
+| **純増 (zero-shotモードONNX)** | **~0.10M** | **~0.4MB** |
 
-現在のONNXモデル (~74MB) に対して **+0.7%** の増加。無視できるレベル。
+現在のONNXモデル (~74MB) に対して **+0.5%** の増加。無視できるレベル。
+
+> **注**: Dual-Mode実装により、学習時は`emb_g`と`spk_proj`が共存する。ONNXエクスポート時に
+> `--export-mode`で使用する経路を選択するため、エクスポートされたONNXモデルには選択した
+> モードの経路のみが含まれる。
 
 ---
 
@@ -265,152 +283,142 @@ g [B, gin_channels, 1]
 
 ### 5.1 変更ファイル一覧
 
-| ファイル | 変更種別 | 変更規模 | 内容 |
-|---------|---------|---------|------|
-| `vits/models.py` | 修正 | ~40行 | SynthesizerTrn: spk_proj追加、dual-mode対応 |
-| `vits/lightning.py` | 修正 | ~80行 | CAM++ロード、SCL/DINO損失計算 |
-| `vits/losses.py` | 修正 | ~30行 | speaker_consistency_loss, dino_loss追加 |
-| `vits/config.py` | 修正 | ~5行 | spk_embed_dim, use_zero_shot フィールド追加 |
-| `vits/dataset.py` | 修正 | ~20行 | speaker_embedding読み込み対応 |
-| `export_onnx.py` | 修正 | ~30行 | speaker_embedding入力対応 |
-| `infer_onnx.py` | 修正 | ~40行 | --speaker-embedding オプション追加 |
-| `__main__.py` | 修正 | ~15行 | --zero-shot CLI引数追加 |
-| **`extract_speaker_embedding.py`** | **新規** | **~280行** | **オフラインembedding抽出ツール** |
-| `src/python/tests/test_zero_shot.py` | 新規 | ~360行 | M1: dual-modeテスト (15テスト) |
-| `src/python/tests/test_m2_training_pipeline.py` | 新規 | ~180行 | M2: SCL/DINO/Datasetテスト (12テスト) |
-| `src/python/tests/test_m3_inference_pipeline.py` | 新規 | ~410行 | M3: ONNX export/inferテスト (5テスト) |
-| `src/python/tests/test_m4_extract_speaker_embedding.py` | 新規 | ~170行 | M4: 抽出ツールテスト (9テスト) |
+> **実装状態 (2026-03-10)**: 全ファイル実装完了。
+
+| ファイル | 変更種別 | 変更規模 | 内容 | 状態 |
+|---------|---------|---------|------|------|
+| `vits/models.py` | 修正 | ~40行 | SynthesizerTrn: Dual-Mode (emb_g + spk_proj 共存) | ✅ 完了 |
+| `vits/lightning.py` | 修正 | ~80行 | use_zero_shot デフォルト有効、speaker_embedding受け渡し、dino_center バッファ | ✅ 完了 |
+| `vits/losses.py` | 修正 | ~30行 | speaker_consistency_loss, dino_loss追加 | ✅ 完了 |
+| `vits/config.py` | 修正 | ~5行 | spk_embed_dim, use_zero_shot フィールド追加 | ✅ 完了 |
+| `vits/dataset.py` | 修正 | ~20行 | speaker_embedding (.npy) 読み込み対応 | ✅ 完了 |
+| `export_onnx.py` | 修正 | ~80行 | `--export-mode {auto, zero-shot, sid}` 対応 | ✅ 完了 |
+| `infer_onnx.py` | 修正 | ~40行 | `--speaker-embedding` オプション追加 | ✅ 完了 |
+| `__main__.py` | 修正 | ~15行 | マルチスピーカー時にzero-shot自動有効化（`--zero-shot`フラグは削除） | ✅ 完了 |
+| **`extract_speaker_embedding.py`** | **新規** | **~680行** | **オフラインembedding抽出ツール（per-utterance対応）** | ✅ 完了 |
+| **`prepare_zero_shot_dataset.py`** | **新規** | **~970行** | **複数コーパス統合データ準備スクリプト** | ✅ 完了 |
+| `src/python/tests/test_zero_shot.py` | 新規 | ~360行 | M1: dual-modeテスト (15テスト) | ✅ 完了 |
+| `src/python/tests/test_m2_training_pipeline.py` | 新規 | ~180行 | M2: SCL/DINO/Datasetテスト (12テスト) | ✅ 完了 |
+| `src/python/tests/test_m3_inference_pipeline.py` | 新規 | ~410行 | M3: ONNX export/inferテスト (5テスト) | ✅ 完了 |
+| `src/python/tests/test_m4_extract_speaker_embedding.py` | 新規 | ~170行 | M4: 抽出ツールテスト (9テスト) | ✅ 完了 |
 
 ### 5.2 models.py — SynthesizerTrn
 
-#### `__init__` (現在: 行731-828)
+> **実装完了 (2026-03-10)**: Dual-Mode Speaker Conditioning が実装済み。
+> 当初計画の排他的 if/elif 設計から、`emb_g` と `spk_proj` が**同一モデルに共存**する
+> Dual-Mode 設計に変更された。
+
+#### `__init__` (実装済み)
 
 ```python
-# 変更: __init__ のシグネチャにパラメータ追加
-def __init__(self, ..., prosody_dim=0,
-             use_zero_shot=False, spk_embed_dim=192):  # NEW
+def __init__(self, ..., prosody_dim=16,
+             use_zero_shot=False, spk_embed_dim=192):
     ...
     self.use_zero_shot = use_zero_shot
 
-    # 変更: speaker embedding の初期化
+    # Dual-Mode: emb_g と spk_proj が独立に初期化される
+    if n_speakers > 1:
+        self.emb_g = nn.Embedding(n_speakers, gin_channels)  # sid経路
     if use_zero_shot:
-        # zero-shot mode: 外部embedding → gin_channels への射影
-        self.spk_proj = nn.Linear(spk_embed_dim, gin_channels)
-    elif n_speakers > 1:
-        # 従来mode: discrete speaker ID → embedding lookup
-        self.emb_g = nn.Embedding(n_speakers, gin_channels)
+        self.spk_proj = nn.Linear(spk_embed_dim, gin_channels)  # embedding経路
 ```
 
-#### `forward` (現在: 行868-932)
+#### `forward` / `infer` (実装済み)
 
 ```python
 def forward(self, x, x_lengths, y, y_lengths, sid=None,
             prosody_features=None,
-            speaker_embedding=None):  # NEW
+            speaker_embedding=None):
     ...
-    # 変更: g ベクトルの生成
-    if self.use_zero_shot:
-        if speaker_embedding is None:
-            raise ValueError("speaker_embedding is required when use_zero_shot=True")
-        g = self.spk_proj(speaker_embedding).unsqueeze(-1)  # [B, gin_channels, 1]
-    elif self.n_speakers > 1:
-        assert sid is not None, "Missing speaker id"
-        g = self.emb_g(sid).unsqueeze(-1)
+    # Dual-Mode: 入力に応じて経路を自動選択
+    if speaker_embedding is not None and hasattr(self, "spk_proj"):
+        g = self.spk_proj(speaker_embedding).unsqueeze(-1)  # [B, 512, 1]
+    elif sid is not None and hasattr(self, "emb_g"):
+        g = self.emb_g(sid).unsqueeze(-1)  # [B, 512, 1]
+    elif self.n_speakers > 1 or self.use_zero_shot:
+        raise ValueError(
+            "Either speaker_embedding or sid must be provided for multi-speaker/zero-shot model"
+        )
     else:
         g = None
     # 以降は変更なし — g の形状 [B, gin_channels, 1] が共通
 ```
 
-#### `infer` (現在: 行934-983)
-
-`forward` と同様の変更を適用。
+`infer` メソッドも同一のDual-Mode分岐を持つ。
 
 ### 5.3 lightning.py — 学習ループ
 
-> **実装状態 (2026-03-08)**: PyTorch版CAM++の統合は保留中。現在のlightning.pyには
-> `c_spk`, `c_dino`, `speaker_encoder_path`, `freeze_speaker_encoder_steps` パラメータ、
-> `dino_center` バッファ、および `training_step_g` でのspeaker_embedding受け渡しが実装済み。
-> SCL/DINO損失関数は `losses.py` に定義済みだが、training_step_g への統合は
-> PyTorch Speaker Encoder (または `onnx2torch` 変換) 完了後に実施予定。
+> **実装状態 (2026-03-10)**: 以下が実装完了済み:
+> - `use_zero_shot=True` がデフォルト（マルチスピーカー時に自動有効化）
+> - `gin_channels=512` の自動設定（`__init__` 内で `num_speakers > 1` 時に設定）
+> - `c_spk`, `c_dino`, `speaker_encoder_path`, `freeze_speaker_encoder_steps` パラメータ
+> - `dino_center` バッファ (`register_buffer`)
+> - `training_step_g` での `speaker_embedding` 受け渡し（Batchから取得）
+> - `torch.compile` 対応（Generator decoder + MPD）
+>
+> **SCL/DINO損失のtraining_step_g統合は未実施**。損失関数自体は `losses.py` に定義済みだが、
+> 学習中のSpeaker Encoderを通した動的embedding計算は実装されていない。
+> 現在の学習パイプラインでは、事前抽出済みのper-utterance embeddingを使用し、
+> `spk_proj` による射影で話者条件付けを行う方式で学習を実施している。
 
-#### CAM++ Speaker Encoder の読み込み
+#### VitsModel.__init__ (実装済み)
 
 ```python
 class VitsModel(pl.LightningModule):
-    def __init__(self, ..., use_zero_shot=False, spk_embed_dim=192,
+    def __init__(self, ...,
+                 use_zero_shot=True,       # デフォルト有効
+                 spk_embed_dim=192,
                  c_spk=9.0, c_dino=0.1,
+                 speaker_encoder_path=None,
                  freeze_speaker_encoder_steps=100000):
         ...
+        # gin_channels の自動設定
+        if (use_zero_shot or num_speakers > 1) and (gin_channels <= 0):
+            gin_channels = 512  # 768ではガビガビ音が発生するため512に固定
+
+        # DINO center buffer
         if use_zero_shot:
-            from .speaker_encoder import CamPlusSpeakerEncoder
-            self.speaker_encoder = CamPlusSpeakerEncoder(
-                pretrained="iic/speech_campplus_sv_zh-cn_16k-common",
-                output_dim=spk_embed_dim,
-            )
-            # Phase 1: Encoder凍結
-            for param in self.speaker_encoder.parameters():
-                param.requires_grad = False
+            self.register_buffer("dino_center", torch.zeros(spk_embed_dim))
 ```
 
-#### Speaker Consistency Loss の計算
+#### training_step_g (実装済み)
 
 ```python
-def training_step_g(self, batch):
+def training_step_g(self, batch: Batch):
     ...
-    if self.hparams.use_zero_shot:
-        # 参照音声（同一話者の別発話 or 同一発話）からembedding抽出
-        ref_embedding = self.speaker_encoder(ref_audio)  # [B, 192]
-
-        # TTS合成音声からembedding抽出
-        gen_embedding = self.speaker_encoder(y_hat.squeeze(1))  # [B, 192]
-
-        # Speaker Consistency Loss
-        loss_scl = speaker_consistency_loss(gen_embedding, ref_embedding)
-        loss_gen_all += self.hparams.c_spk * loss_scl
+    # speaker_embedding を Batch から取得（事前抽出済み .npy から読み込まれたもの）
+    speaker_embeddings = (
+        batch.speaker_embeddings if batch.speaker_embeddings is not None else None
+    )
+    # SynthesizerTrn.forward に speaker_embedding と sid の両方を渡す
+    # Dual-Mode の分岐は models.py 内で自動処理される
+    (y_hat, l_length, ...) = self.model_g(
+        x, x_lengths, spec, spec_lengths, speaker_ids,
+        prosody_features=prosody_features,
+        speaker_embedding=speaker_embeddings,
+    )
 ```
 
-#### DINO Loss の計算
-
-```python
-        # DINO Loss (self-supervised speaker discriminability)
-        if self.hparams.c_dino > 0:
-            loss_dino = dino_loss(
-                student_emb=gen_embedding,
-                teacher_emb=ref_embedding.detach(),
-                center=self.dino_center,
-                tau_s=0.1, tau_t=self.current_tau_t,
-            )
-            loss_gen_all += self.hparams.c_dino * loss_dino
-            # Update center (EMA)
-            with torch.no_grad():
-                self.dino_center = 0.996 * self.dino_center + 0.004 * ref_embedding.mean(0)
-```
-
-#### Phase切り替え（Encoder凍結解除）
-
-```python
-def on_train_batch_start(self, batch, batch_idx):
-    if self.hparams.use_zero_shot:
-        if self.global_step == self.hparams.freeze_speaker_encoder_steps:
-            _LOGGER.info("Unfreezing speaker encoder at step %d", self.global_step)
-            for param in self.speaker_encoder.parameters():
-                param.requires_grad = True
-            # Encoder用の低学習率を設定
-            # (configure_optimizersでparam groupsを分けておく)
-```
+> **将来の拡張**: SCL/DINO損失をtraining_stepに統合する場合、PyTorch版CAM++
+> (または `onnx2torch` 変換) を学習ループ内に組み込み、合成音声からのembedding
+> 抽出と参照embeddingの比較を行う。パラメータ (`c_spk`, `c_dino`,
+> `freeze_speaker_encoder_steps`) は既に用意されている。
 
 ### 5.4 losses.py — 損失関数追加
 
+> **実装完了 (2026-03-10)**: 損失関数は定義済み。training_step_g への統合は
+> PyTorch版CAM++の学習ループ組み込み後に実施予定。
+
 ```python
 def speaker_consistency_loss(gen_embedding, ref_embedding):
-    """Speaker Consistency Loss (SCL).
-    1 - cosine_similarity(gen, ref)
+    """Speaker Consistency Loss (SCL) — コサイン類似度ベースの話者一貫性損失
+    範囲: 0-2 (0が完全一致)
     """
     return 1.0 - F.cosine_similarity(gen_embedding, ref_embedding, dim=-1).mean()
 
 
 def dino_loss(student_emb, teacher_emb, center, tau_s=0.1, tau_t=0.04):
-    """DINO self-supervised loss for speaker encoder."""
+    """DINO自己蒸留損失 — 話者埋め込み空間の正則化"""
     student_out = F.log_softmax(student_emb / tau_s, dim=-1)
     teacher_out = F.softmax((teacher_emb - center) / tau_t, dim=-1)
     return -(teacher_out * student_out).sum(dim=-1).mean()
@@ -418,28 +426,48 @@ def dino_loss(student_emb, teacher_emb, center, tau_s=0.1, tau_t=0.04):
 
 ### 5.5 export_onnx.py — ONNXエクスポート
 
+> **実装完了 (2026-03-10)**: `--export-mode {auto, zero-shot, sid}` が実装済み。
+> prosody features との組み合わせ、EMA重み適用、ONNX simplification にも対応。
+
 ```python
+# CLI引数
+parser.add_argument(
+    "--export-mode",
+    choices=["auto", "zero-shot", "sid"],
+    default="auto",
+    help="Export mode: auto=detect from model, zero-shot=speaker_embedding input, sid=speaker ID input",
+)
+
+# エクスポートモード判定
+if args.export_mode == "auto":
+    use_zero_shot = model_use_zero_shot  # モデルの設定から自動検出
+elif args.export_mode == "zero-shot":
+    use_zero_shot = True
+else:  # "sid"
+    use_zero_shot = False
+
 # infer_forward 関数内
 def infer_forward(text, text_lengths, scales, sid=None,
                   prosody_features=None, speaker_embedding=None):
     ...
-    if use_zero_shot and speaker_embedding is not None:
+    if use_zero_shot:
         g = model_g.spk_proj(speaker_embedding).unsqueeze(-1)
     elif model_g.n_speakers > 1 and sid is not None:
         g = model_g.emb_g(sid).unsqueeze(-1)
     else:
         g = None
-    ...
 
-# ONNX入力名
+# ONNX入力名（prosody対応済み）
 if use_zero_shot:
-    input_names = ["input", "input_lengths", "scales", "speaker_embedding"]
-    dynamic_axes["speaker_embedding"] = {0: "batch_size"}
-    # dummy input
-    dummy_spk = torch.randn(1, zero_shot_embed_dim, dtype=torch.float32)
+    # input_names: [input, input_lengths, scales, prosody_features?, speaker_embedding]
+    if has_prosody:
+        input_names.append("prosody_features")
+    input_names.append("speaker_embedding")
 elif num_speakers > 1:
-    input_names = ["input", "input_lengths", "scales", "sid"]
-    dynamic_axes["sid"] = {0: "batch_size"}
+    # input_names: [input, input_lengths, scales, sid, prosody_features?]
+    input_names.append("sid")
+    if has_prosody:
+        input_names.append("prosody_features")
 ```
 
 ### 5.6 infer_onnx.py — 推論スクリプト
@@ -459,6 +487,8 @@ elif "sid" in input_names and args.speaker_id is not None:
 
 ### 5.7 extract_speaker_embedding.py — 新規ツール
 
+> **実装完了 (2026-03-10)**: ~680行。3つの動作モードと最適化されたper-utteranceモードを実装。
+
 ```python
 """オフラインSpeaker Embedding抽出ツール.
 
@@ -475,21 +505,34 @@ elif "sid" in input_names and args.speaker_id is not None:
     --audio-dir /path/to/speaker_wavs/ \
     --output speaker.npy
 
-  # データセットの全話者を一括抽出
+  # データセットの全話者を一括抽出（per-speaker平均）
   uv run python -m piper_train.extract_speaker_embedding \
     --encoder campplus.onnx \
-    --dataset-dir /data/piper/dataset-moe-speech-20speakers-v2 \
+    --dataset-dir /data/piper/dataset-moe-speech-20speakers \
     --output-dir /path/to/embeddings/
+
+  # Per-utterance抽出（学習用・推奨）
+  uv run python -m piper_train.extract_speaker_embedding \
+    --encoder campplus.onnx \
+    --dataset-dir /data/piper/dataset-moe-speech-20speakers \
+    --per-utterance --batch-size 64 --num-workers 12
 """
 ```
 
 処理フロー:
-1. WAVファイルを16kHzにリサンプリング
-2. 80次元Fbank特徴を抽出（25ms窓、10msホップ）
-3. CAM++ ONNXモデルで192次元embeddingを計算
+1. WAV/PTファイルを16kHzにリサンプリング（キャッシュ済みResampler使用）
+2. 80次元Fbank特徴を抽出（25ms窓、10msホップ、CMVN正規化）
+3. CAM++ ONNXモデルで192次元embeddingを計算（GPU優先、バッチ推論対応）
 4. L2正規化
 5. 複数ファイルの場合は平均化して再正規化
 6. `.npy`ファイルとして保存
+
+**Per-utterance モードの最適化** (学習用推奨):
+- DataLoader (`num_workers`) でCPU前処理を並列化 (GIL回避)
+- バッチONNX推論でGPU効率を最大化
+- 既存embedding事前キャッシュでファイルI/O削減
+- `dataset.jsonl` に `speaker_embedding_path` を自動追加
+- 出力: 各発話ごとに `speaker_embeddings/{stem}.npy` (192次元, float32)
 
 ---
 
@@ -514,11 +557,14 @@ WavLM Discriminatorの音割れ問題が解決した場合、Phase 2完了後に
 
 ### 6.2 損失関数の構成
 
-| # | 損失関数 | 重み | Phase 1 | Phase 2 |
-|---|---------|------|---------|---------|
-| 1 | VITS損失 (recon + KL + adv) | 既存 | 有効 | 有効 |
-| 2 | Speaker Consistency Loss | c_spk=9.0 | 有効 | 有効 |
-| 3 | DINO Loss | c_dino=0.1 | 有効 | 有効 |
+> **注 (2026-03-10)**: 現在の学習ではVITS損失のみ使用。SCL/DINOは損失関数が定義済み
+> (`losses.py`) だが、training_step_g への統合は未実施。将来のCAM++学習ループ統合後に有効化予定。
+
+| # | 損失関数 | 重み | 現状 | 将来 Phase 1 | 将来 Phase 2 |
+|---|---------|------|------|-------------|-------------|
+| 1 | VITS損失 (recon + KL + adv) | 既存 | ✅ 有効 | 有効 | 有効 |
+| 2 | Speaker Consistency Loss | c_spk=9.0 | 定義済み・未統合 | 有効 (予定) | 有効 (予定) |
+| 3 | DINO Loss | c_dino=0.1 | 定義済み・未統合 | 有効 (予定) | 有効 (予定) |
 
 WavLM Perceptual Loss (c_wavlm) はオプションのPhase 3でのみ使用。現時点では学習計画に含めない。
 
@@ -534,17 +580,24 @@ YourTTSで提案。c_spk=9.0はYourTTS論文の推奨値。
 - ノイズの多いデータでも話者分離性を維持
 - 温度: tau_s=0.1, tau_t=0.04→0.07 (30epochでウォームアップ)
 
-### 6.3 GPUメモリ見積もり (L4 16GB)
+### 6.3 GPUメモリ見積もり
+
+> **注 (2026-03-10)**: 現在はRTX 6000 Ada 48GB x1で学習。以下の見積もりはCAM++を学習ループに
+> 統合した場合（将来のSCL/DINO実装時）の参考値。現在の事前抽出方式ではCAM++のメモリは不要。
 
 | Phase | コンポーネント | メモリ/GPU |
 |-------|-------------|-----------|
-| Phase 1 | VITS (~30M) + CAM++ 凍結 (7.2M) + SCL/DINO | ~10-11GB |
-| Phase 2 | VITS + CAM++ 解凍 + SCL/DINO | ~12-14GB |
-| Phase 3 (オプション) | VITS + CAM++ + WavLM Disc. (~95M) + SCL/DINO | ~15-16GB |
+| 現行 (事前抽出方式) | VITS (~30M) のみ、CAM++不要 | ~8-10GB |
+| 将来: Phase 1 | VITS (~30M) + CAM++ 凍結 (7.2M) + SCL/DINO | ~10-11GB |
+| 将来: Phase 2 | VITS + CAM++ 解凍 + SCL/DINO | ~12-14GB |
+| 将来: Phase 3 (オプション) | VITS + CAM++ + WavLM Disc. (~95M) + SCL/DINO | ~15-16GB |
 
-WavLMなしの構成では、Phase 1-2ともにメモリに十分な余裕がある。
+RTX 6000 Ada 48GBでは全Phase問題なく実行可能。
 
-### 6.4 推定学習時間 (L4 x4)
+### 6.4 推定学習時間
+
+> **注 (2026-03-10)**: RTX 6000 Ada 48GB x1での20話者モデル学習は200 epoch完了済み。
+> 以下は大規模コーパス(~2500話者)でのzero-shot事前学習の見積もり。
 
 | Phase | Iterations | 推定時間 |
 |-------|-----------|---------|
@@ -555,13 +608,39 @@ WavLMなしの構成では、Phase 1-2ともにメモリに十分な余裕があ
 
 ### 6.5 学習コマンド
 
+> **注 (2026-03-10)**: `--zero-shot` フラグは削除済み。マルチスピーカー (`num_speakers > 1`)
+> なら自動的にzero-shot (Dual-Mode) が有効化される。`gin_channels=512` も自動設定。
+> 学習にはper-utterance事前抽出済みのspeaker embeddingを使用する。
+
 ```bash
-# Phase 1: CAM++凍結
+# 推奨: RTX 6000 Ada 48GB x1 での事前学習
+uv run python -m piper_train \
+  --dataset-dir /home/shadeform/data/piper/dataset-moe-speech-20speakers \
+  --prosody-dim 16 \
+  --accelerator gpu --devices 1 \
+  --precision bf16-mixed \
+  --max_epochs 200 \
+  --batch-size 160 \
+  --samples-per-speaker 8 \
+  --checkpoint-epochs 2 \
+  --quality medium \
+  --base_lr 2e-4 \
+  --ema-decay 0.9995 \
+  --num-workers 8 \
+  --no-wavlm \
+  --default_root_dir /home/shadeform/data/piper/output-moe-speech-20speakers
+```
+
+<details>
+<summary>旧コマンド（L4 x4マルチGPU、参考）</summary>
+
+```bash
+# Phase 1: CAM++凍結（SCL/DINO統合後に使用予定）
 NCCL_DEBUG=WARN NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1 \
 uv run python -m piper_train \
   --dataset-dir /data/piper/dataset-zero-shot-merged \
   --prosody-dim 16 \
-  --zero-shot --spk-embed-dim 192 \
+  --spk-embed-dim 192 \
   --c-spk 9.0 --c-dino 0.1 \
   --freeze-speaker-encoder-steps 100000 \
   --accelerator gpu --devices 4 --precision 16-mixed \
@@ -570,22 +649,9 @@ uv run python -m piper_train \
   --base_lr 2e-4 --disable_auto_lr_scaling \
   --ema-decay 0.9995 --num-workers 0 --no-pin-memory \
   --default_root_dir /data/piper/output-zero-shot-phase1
-
-# Phase 2: CAM++解凍、リジューム
-NCCL_DEBUG=WARN NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1 \
-uv run python -m piper_train \
-  --dataset-dir /data/piper/dataset-zero-shot-merged \
-  --prosody-dim 16 \
-  --zero-shot --spk-embed-dim 192 \
-  --c-spk 9.0 --c-dino 0.1 \
-  --accelerator gpu --devices 4 --precision 16-mixed \
-  --max_epochs 400 --batch-size 10 --samples-per-speaker 2 \
-  --checkpoint-epochs 1 --quality medium \
-  --base_lr 2e-4 --disable_auto_lr_scaling \
-  --ema-decay 0.9995 --num-workers 0 --no-pin-memory \
-  --default_root_dir /data/piper/output-zero-shot-phase2 \
-  --resume_from_checkpoint /data/piper/output-zero-shot-phase1/lightning_logs/.../last.ckpt
 ```
+
+</details>
 
 ---
 
@@ -756,13 +822,16 @@ CUDA_VISIBLE_DEVICES="" uv run python -m piper_train.infer_onnx \
 
 ### 10.1 互換性マトリクス
 
+> **更新 (2026-03-10)**: Dual-Mode実装により、同一チェックポイントからsidモデルと
+> zero-shotモデルの両方をエクスポートできるため、互換性が大幅に向上した。
+
 | 既存機能 | 互換性 | 影響 | 備考 |
 |---------|--------|------|------|
-| `--speaker-id` による話者指定 | **非互換** (zero-shotモデル) | speaker_embedding入力に変更 | 既存emb_gモデルは別途維持可能 |
+| `--speaker-id` による話者指定 | **完全互換** (sidモードONNX) | `--export-mode sid` でsid入力モデルをエクスポート可能 | Dual-Modeにより同一チェックポイントから両方式に対応 |
 | 日本語 Phonemizer | 影響なし | 独立モジュール | |
 | 英語 Phonemizer (g2p-en) | 影響なし | 独立モジュール | |
 | Prosody Features (A1/A2/A3) | **完全互換** | Duration Predictorへの入力は変更なし | |
-| ONNX推論 | **互換** | 入力名がsid→speaker_embeddingに変更 | |
+| ONNX推論 | **互換** | `--export-mode` で入力を選択 (sid or speaker_embedding) | |
 | CPU推論 | **完全互換** | 推論速度ゼロインパクト | |
 | WavLM Discriminator | **完全互換** | 現在は未使用。将来有効化する場合も学習時のみで独立 | |
 | EMA重み | **完全互換** | export_onnxの処理は変更なし | |
@@ -774,33 +843,45 @@ CUDA_VISIBLE_DEVICES="" uv run python -m piper_train.infer_onnx \
 
 ### 10.2 既存speaker_idモデルからの移行
 
-既存の20話者モデル (`moe-speech-20speakers-v2.onnx`) は引き続き `--speaker-id` で利用可能。zero-shotモデルは**別モデル**として並行して提供する。
+> **更新 (2026-03-10)**: Dual-Mode実装により、同一チェックポイントから`--export-mode sid`で
+> sidモデル、`--export-mode zero-shot`でzero-shotモデルをそれぞれエクスポートできる。
+
+既存の20話者モデル (`moe-speech-20speakers-v2.onnx`) は引き続き `--speaker-id` で利用可能。
 
 既存話者のembeddingは、学習済みチェックポイントの `emb_g.weight` から抽出可能:
 
 ```python
-# 既存モデルからembedding抽出
+# 既存モデルからembedding抽出 (gin_channels=512)
 ckpt = torch.load("last.ckpt")
-emb_weights = ckpt["state_dict"]["model_g.emb_g.weight"]  # [20, 768]
+emb_weights = ckpt["state_dict"]["model_g.emb_g.weight"]  # [20, 512]
 for i in range(20):
     np.save(f"speaker_{i}.npy", emb_weights[i].numpy())
 ```
 
+> **注**: emb_g.weightから抽出されるembeddingはgin_channels次元(512)であり、
+> CAM++の192次元embeddingとは異なる。sidモードのONNXモデルで使用する場合のみ有効。
+> zero-shotモードのONNXモデルには、CAM++で抽出した192次元embeddingを使用すること。
+
 ### 10.3 推論コマンド比較
 
 ```bash
-# 既存: speaker-idモード（変更なし）
-uv run python -m piper_train.infer_onnx \
-  --model moe-speech-20speakers-v2.onnx \
-  --config config.json \
+# Speaker IDモード（--export-mode sid でエクスポートしたモデル）
+CUDA_VISIBLE_DEVICES="" uv run python -m piper_train.infer_onnx \
+  --model /path/to/sid_model.onnx \
+  --config /path/to/config.json \
+  --output-dir /path/to/output \
   --text "こんにちは" --speaker-id 0
 
-# 新規: zero-shotモード
-uv run python -m piper_train.infer_onnx \
-  --model model-zero-shot.onnx \
-  --config config.json \
-  --text "こんにちは" --speaker-embedding speaker.npy
+# Zero-shotモード（--export-mode zero-shot でエクスポートしたモデル）
+CUDA_VISIBLE_DEVICES="" uv run python -m piper_train.infer_onnx \
+  --model /path/to/zero_shot_model.onnx \
+  --config /path/to/config.json \
+  --output-dir /path/to/output \
+  --text "こんにちは" --speaker-embedding /path/to/speaker.npy
 ```
+
+> **注**: zero-shotモデルに `--speaker-id` を指定すると無視される旨の警告が表示される。
+> また、zero-shotモデルに `--speaker-embedding` を指定しない場合はエラーで終了する。
 
 ---
 
@@ -808,9 +889,9 @@ uv run python -m piper_train.infer_onnx \
 
 | # | 要件 | 充足 | 根拠 |
 |---|------|------|------|
-| R1 | 推論速度ゼロインパクト | **充足** | Speaker Encoderは推論パイプライン外。ONNXグラフ内の変更はGather→Linear(192→768)のみで数μs。推論時間への影響は0.001%未満 |
-| R2 | 軽量性維持 | **充足** | ONNXモデルサイズ増加は~0.5MB (+0.7%)。Speaker Encoder (28MB) は別ファイルで推論時不要 |
-| R3 | 既存機能の完全互換 | **充足** | Prosody, WavLM Disc., CPU推論, EMA等は全て影響なし。既存speaker-idモデルは別途維持 |
+| R1 | 推論速度ゼロインパクト | **充足** | Speaker Encoderは推論パイプライン外。ONNXグラフ内の変更はGather→Linear(192→512)のみで数μs。推論時間への影響は0.001%未満 |
+| R2 | 軽量性維持 | **充足** | ONNXモデルサイズ増加は~0.4MB (+0.5%)。Speaker Encoder (27MB) は別ファイルで推論時不要 |
+| R3 | 既存機能の完全互換 | **充足** | Dual-Mode実装により、同一チェックポイントからsidモデルとzero-shotモデルの両方をエクスポート可能。Prosody, WavLM Disc., CPU推論, EMA等は全て影響なし |
 | R4 | GPL-free | **充足** | CAM++ (Apache-2.0), WeSpeaker (Apache-2.0), SpeechBrain (Apache-2.0) |
 | R5 | CPU推論対応 | **充足** | ONNX Runtimeで推論。Speaker Encoder不要。推論速度は現在と同一 |
 | R6 | 多言語対応 | **充足** | Speaker Encoder (CAM++) は言語非依存。Phonemizerレジストリに言語を追加するだけでzero-shot対応可能。日本語(JVS+moe-speech: 120話者)、英語(LibriTTS-R: 2456話者)をコアとし、追加言語はMLS等のコーパスで拡張可能。Cross-lingual voice cloning（日本語参照→英語合成等）も原理的に対応 |
@@ -827,38 +908,45 @@ uv run python -m piper_train.infer_onnx \
 | **Impl-2** | lightning.py 変更 (CAM++統合, SCL/DINO損失) | 2日 | - |
 | **Impl-3** | export_onnx.py / infer_onnx.py 変更 | 1日 | - |
 | **Impl-4** | extract_speaker_embedding.py 新規作成 | 1日 | - |
-| **Impl-5** | データ準備 (LibriTTS-R + JVS統合) | 2日 | - |
+| **Impl-5** | データ準備 (LibriTTS-R + JVS統合) — ✅ 完了 | 2日 | - |
 | **Train-1** | Phase 1学習 (CAM++凍結) | - | ~60-80h |
 | **Train-2** | Phase 2学習 (CAM++解凍 + DINO + SCL) | - | ~130-170h |
 | **Eval** | 評価パイプライン実行 + 結果分析 | 1日 | - |
 | **合計** | | **~8日** | **~190-250h** |
 
-#### 実績 (2026-03-08)
+#### 実績 (2026-03-10)
 
 | Phase | 内容 | 実績 |
 |-------|------|------|
 | **Impl-1** (M1) | models.py / config.py 変更 + 単体テスト | ✅ 完了 (15テスト) |
-| **Impl-2** (M2) | lightning.py / losses.py / dataset.py / __main__.py | ✅ 完了 (12テスト、SCL/DINO統合は保留) |
+| **Impl-2** (M2) | lightning.py / losses.py / dataset.py / __main__.py | ✅ 完了 (12テスト、SCL/DINO training_step統合は保留) |
 | **Impl-3** (M3) | export_onnx.py / infer_onnx.py 変更 | ✅ 完了 (5テスト) |
-| **Impl-4** (M4) | extract_speaker_embedding.py 新規作成 | ✅ 完了 (9テスト) |
-| **Impl-5** (M5) | データ準備スクリプト | 未着手 |
+| **Impl-4** (M4) | extract_speaker_embedding.py 新規作成 | ✅ 完了 (9テスト, per-utterance対応) |
+| **Impl-5** (M5) | データ準備スクリプト (prepare_zero_shot_dataset.py) | ✅ 完了 (~970行, LibriTTS-R/JVS/moe-speech統合) |
+
+> **注 (2026-03-10)**: 全マイルストーン (M1-M5) の実装が完了。20話者モデル v2 の学習も
+> 200 epoch完了し、ONNX変換済み (`moe-speech-20speakers-v2.onnx`, 74MB)。
+> 今後は大規模コーパス (LibriTTS-R + JVS) でのzero-shot事前学習と、
+> SCL/DINO損失のtraining_step統合が課題。
 
 ### 12.2 前提条件
 
-- 現在の20話者WavLM学習 (200epoch) が完了していること
-- L4 GPU x4 が利用可能であること
+- ~~現在の20話者WavLM学習 (200epoch) が完了していること~~ → ✅ 完了（v2モデル学習済み）
+- RTX 6000 Ada 48GB x1 が利用可能であること（旧: L4 x4）
 - LibriTTS-R / JVS コーパスがダウンロード済みであること
-- CAM++ ONNXモデルがダウンロード済みであること
+- ~~CAM++ ONNXモデルがダウンロード済みであること~~ → ✅ 完了 (`/home/shadeform/data/piper/models/campplus.onnx`)
 
 ### 12.3 成果物
 
-| 成果物 | 形式 | 説明 |
-|--------|------|------|
-| zero-shotモデル | `.onnx` | speaker_embedding入力対応のTTSモデル |
-| CAM++ Encoder | `.onnx` (28MB) | オフラインembedding抽出用（別配布） |
-| 抽出ツール | Python script | `extract_speaker_embedding.py` |
-| 既存20話者embedding | `.npy` x20 | 既存話者のembeddingファイル |
-| 評価結果レポート | Markdown | SECS, WER/CER, UTMOS の計測結果 |
+| 成果物 | 形式 | 説明 | 状態 |
+|--------|------|------|------|
+| 20話者v2 ONNXモデル | `.onnx` (74MB) | sid入力対応のTTSモデル | ✅ 完了 |
+| CAM++ Encoder | `.onnx` (27MB) | オフラインembedding抽出用（別配布） | ✅ 取得済み |
+| 抽出ツール | Python script | `extract_speaker_embedding.py` (per-utterance対応) | ✅ 完了 |
+| データ準備ツール | Python script | `prepare_zero_shot_dataset.py` (3コーパス統合) | ✅ 完了 |
+| zero-shot ONNXモデル | `.onnx` | speaker_embedding入力対応（大規模データで学習後） | 未着手 |
+| 既存20話者embedding | `.npy` x20 | 既存話者のembeddingファイル | 未着手 |
+| 評価結果レポート | Markdown | SECS, WER/CER, UTMOS の計測結果 | 未着手 |
 
 ---
 

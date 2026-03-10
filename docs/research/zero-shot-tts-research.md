@@ -1,6 +1,6 @@
 # Zero-Shot 話者再現 TTS 技術調査レポート
 
-**調査日**: 2026-03-07
+**調査日**: 2026-03-07 (最終更新: 2026-03-10)
 **目的**: Piper TTS (VITSアーキテクチャ) にzero-shot話者再現機能を導入するための技術調査
 
 ---
@@ -28,13 +28,14 @@
 
 > **注**: 本セクションは初期調査時の結論です。推論速度ゼロインパクトの制約を加えた**最終推奨はセクション12**を参照してください。Speaker Encoderの推奨もECAPA-TDNN → **CAM++** に変更されています。
 
-Piperにzero-shot話者再現を導入するための最終推奨アプローチは **事前計算Embedding方式 + CAM++ Speaker Encoder (Apache-2.0) + DINO Loss + Speaker Consistency Loss** である。Speaker Encoderを推論パイプラインから完全に分離することで、推論速度ゼロインパクトを実現する。
+Piperにzero-shot話者再現を導入するための最終推奨アプローチは **事前計算Embedding方式 + CAM++ Speaker Encoder (Apache-2.0) + Dual-Mode Speaker Conditioning (emb_g + spk_proj)** である。Speaker Encoderを推論パイプラインから完全に分離することで、推論速度ゼロインパクトを実現する。
 
 - **推論時**: 事前計算済みembedding (.npy) をファイルから読み込むだけ（追加コスト <1ms）
-- Speaker Encoderには **CAM++** (Apache-2.0, EER 0.73%, 7.2Mパラメータ) を採用
-- 学習データ: LibriTTS-R (585h, 2,456話者) + JVS (30h, 100話者) + 現行20話者 = **~715h, ~2,576話者**
-- 2フェーズ学習: Speaker Encoder凍結 (100K iter) → 全解凍+DINO/SCL (200K iter)
-- 推定学習時間: 約190-250時間 (L4 GPU x4)
+- Speaker Encoderには **CAM++** (Apache-2.0, EER 0.73%, 7.2Mパラメータ, 27MB ONNX) を採用
+- **gin_channels=512**（768はガビガビ音が発生したため不採用）
+- **アーキテクチャ**: `emb_g` (nn.Embedding) + `spk_proj` (nn.Linear(192, 512)) のDual-Mode
+- **学習環境**: RTX 6000 Ada 48GB x1、batch_size=160、samples_per_speaker=8、bf16-mixed、200 epochs
+- **学習データ**: 20話者データセット (`dataset-moe-speech-20speakers`) + per-utterance embedding
 - 具体的な実装計画は [zero-shot-tts-implementation-plan.md](./zero-shot-tts-implementation-plan.md) を参照
 
 ### VITSの品質上限と将来展望
@@ -45,7 +46,7 @@ Piperにzero-shot話者再現を導入するための最終推奨アプローチ
 
 | フェーズ | 内容 | 工数 | 状態 |
 |---------|------|------|------|
-| Phase 1 | CAM++ Speaker Encoder + DINO/SCL Loss 導入 | 実装~6日 + 学習190-250h | M0-M4 実装完了 |
+| Phase 1 | CAM++ Speaker Encoder + Dual-Mode Speaker Conditioning | 実装~6日 + 学習200 epochs | **実装・学習完了** (2026-03-10) |
 | Phase 2 | TextEncoder Speaker Conditioning追加 (VITS2方式) | 1-2日 + 再学習 | 未着手 |
 | Phase 3 | MB-iSTFT-VITS デコーダ高速化 (オプション) | 3-5日 + 再学習 | 未着手 |
 | 将来 | アーキテクチャ刷新 (Flow Matching等) | 大規模 |
@@ -162,11 +163,13 @@ Zero-shot TTSは大きく4カテゴリに分類される。
 
 ### 3.2 各手法の詳細
 
-#### ECAPA-TDNN（推奨）
+#### ECAPA-TDNN（初期調査時の推奨）
 - x-vectorの改良版。Squeeze-and-Excitation, Res2Net, Attentive Statistical Poolingを導入
 - 192次元で軽量ながら高精度 (EER 0.86%)
 - **非英語話者（日本語含む）でトップクラスの識別性能** (EER 1.71%)
 - SpeechBrain (Apache 2.0), NVIDIA NeMo (Apache 2.0) で事前学習済みモデル利用可能
+
+> **最終決定 (2026-03-10)**: ECAPA-TDNNではなく**CAM++** (EER 0.73%, Apache-2.0) を採用。精度・効率・ONNX対応済みである点で総合的に優位と判断。詳細はセクション11.5を参照。
 
 #### WavLM / HuBERT (自己教師学習)
 - 音響的に豊かな表現。fine-tuning後は最高精度 (EER 0.99%)
@@ -188,6 +191,8 @@ Zero-shot TTSは大きく4カテゴリに分類される。
 - CLAPは粗い音声記述ベースで個別話者特徴を捉えられない
 
 ### 3.3 推奨ランキング
+
+> **最終決定 (2026-03-10)**: 下記は初期調査時のランキング。最終的に**CAM++** (EER 0.73%, 7.2Mパラメータ, 27MB ONNX, Apache-2.0) を採用した。CosyVoiceでの実績、ONNX対応済み、精度/サイズの最良バランスが決め手。詳細はセクション11.5を参照。
 
 | 順位 | 手法 | 理由 |
 |------|------|------|
@@ -238,9 +243,11 @@ if n_speakers > 1:
 | E: DINO-VITS | 中 | 中 | 高 | 部分的 | 小 |
 | F: GPT-SoVITS | 大 | 高 | 高 | 困難 | かなり低下 |
 
-### 4.3 YourTTS方式の詳細（推奨）
+### 4.3 YourTTS方式の詳細（初期調査時の推奨）
 
 VITSをベースに、話者ID embeddingを外部Speaker Encoderのd-vector/ECAPA embeddingに置換する方法。
+
+> **最終実装 (2026-03-10)**: 下記はYourTTS方式の調査段階のコード例。最終実装では、Speaker Encoderをモデル内に組み込むのではなく、**事前計算したembeddingを`nn.Linear`で射影するDual-Mode方式**を採用した。`emb_g` (speaker ID) と `spk_proj` (speaker embedding射影) が共存し、`--export-mode {sid, zero-shot}` でONNXモデルを分離する設計。詳細はセクション11-12および実装ファイル (`models.py`) を参照。
 
 **コード変更の核心:**
 ```python
@@ -249,9 +256,15 @@ if n_speakers > 1:
     self.emb_g = nn.Embedding(n_speakers, gin_channels)
 g = self.emb_g(sid).unsqueeze(-1)  # [b, gin_channels, 1]
 
-# 変更後
+# 調査時の想定
 self.speaker_encoder = SpeakerEncoder(output_dim=gin_channels)
 g = self.speaker_encoder(ref_audio).unsqueeze(-1)  # [b, gin_channels, 1]
+
+# 最終実装（Dual-Mode）
+if n_speakers > 1:
+    self.emb_g = nn.Embedding(n_speakers, gin_channels)  # speaker ID用（維持）
+if use_zero_shot:
+    self.spk_proj = nn.Linear(spk_embed_dim, gin_channels)  # embedding射影用（192→512）
 ```
 
 残りの全コードは `g` の形状が同じためそのまま動作する。
@@ -268,9 +281,10 @@ g = self.speaker_encoder(ref_audio).unsqueeze(-1)  # [b, gin_channels, 1]
 | `infer_onnx.py` | 参照音声からembedding抽出追加 | ~30行 |
 
 **Speaker Encoder選択肢:**
-- ECAPA-TDNN (SpeechBrain): 高品質、Apache-2.0 — **推奨**
+- ECAPA-TDNN (SpeechBrain): 高品質、Apache-2.0 — 初期推奨
 - Resemblyzer: 軽量、MIT
 - WavLM (既にPiperに統合済み) を流用: 追加依存なし
+- **CAM++ (3D-Speaker/CosyVoice): Apache-2.0 — 最終採用**
 
 **学習戦略:**
 1. Speaker Encoderを凍結して VITS 部分のみ学習（50-100 epoch）
@@ -333,14 +347,16 @@ g = self.speaker_encoder(ref_audio).unsqueeze(-1)  # [b, gin_channels, 1]
 
 ### 6.1 段階的導入ロードマップ（精度最優先版）
 
-#### Phase 1: ECAPA-TDNN Speaker Encoder + DINO/SCL Loss（最優先）
+#### Phase 1: Speaker Encoder + DINO/SCL Loss（最優先）
+
+> **最終実装 (2026-03-10)**: Speaker EncoderはECAPA-TDNNではなく**CAM++ ONNX** (192次元, 27MB, Apache-2.0) を採用。モデル内にSpeaker Encoderを組み込むのではなく、事前計算embedding + `nn.Linear(192, 512)` 射影のDual-Mode方式で実装。gin_channels=512（768はガビガビ音が発生したため不採用）。WavLM Discriminatorは`--no-wavlm`で無効化して学習。学習環境はRTX 6000 Ada 48GB x1、batch_size=160、bf16-mixed。
 
 **概要**: Speaker Encoder (ECAPA-TDNN) を導入し、DINO LossとSpeaker Consistency Lossで精度を最大化
 
 **技術選定:**
-- Speaker Encoder: **ECAPA-TDNN** (事前学習済み SpeechBrain, Apache-2.0)
+- Speaker Encoder: **ECAPA-TDNN** (事前学習済み SpeechBrain, Apache-2.0) → **最終: CAM++ ONNX (Apache-2.0)**
 - 損失関数: 既存VITS損失 + Speaker Consistency Loss + DINO Loss + WavLM Perceptual Loss
-- Dual-mode: `--speaker-id` (既存) と `--ref-audio` (zero-shot) の共存
+- Dual-mode: `--speaker-id` (既存) と `--ref-audio` (zero-shot) の共存 → **最終: `--speaker-id` と `--speaker-embedding` の共存**
 - 注入箇所: 既存の4箇所 (DP, PosteriorEnc, Flow, Decoder) そのまま
 
 **学習戦略 (3フェーズ):**
@@ -452,12 +468,13 @@ VITSの品質上限 (SIM-O ~0.65) を超えるために、Flow Matching/Diffusio
 | + Speaker Encoder置換 (YourTTS方式) | ~0.55-0.62 | ~7-8 | 高 |
 | + DINO Loss + SCL Loss追加 | ~0.58-0.65 | ~6-7 | 高 |
 | + TextEncoder Conditioning | ~0.60-0.65 | ~5-6 | 高 |
-| **VITSの理論上限** | **~0.65** | **~5** | - |
+| **VITSの理論上限** | **~0.65** | **~5** | gin_channels=512が実用上限。768はガビガビ音発生 |
 
 #### VITSの根本的制約
 - Speaker Embeddingとprosodyが結合 → 未知話者への汎化が弱い
 - GAN学習の不安定性 → スケーリングが困難
 - Flow/Diffusionに比べて表現力の天井が低い
+- **gin_channels=768ではガビガビ音が発生** → gin_channels=512が実用上の上限（2026-03-10確認）
 
 #### アーキテクチャ変更による精度向上幅
 
@@ -515,99 +532,116 @@ VITSの品質上限 (SIM-O ~0.65) を超えるために、Flow Matching/Diffusio
 
 ### 8.1 Dual-mode Speaker Conditioning
 
-既存の `emb_g` (speaker ID) と新規の Speaker Encoder (zero-shot) を共存させる設計:
+既存の `emb_g` (speaker ID) と新規の speaker embedding射影 (zero-shot) を共存させる設計:
+
+> **最終実装 (2026-03-10)**: 下記は調査段階の設計案。最終実装ではモデル内にSpeaker Encoderを組み込むのではなく、事前計算済みembeddingを`nn.Linear`で射影する方式を採用。`use_speaker_encoder` ではなく `use_zero_shot` フラグ（マルチスピーカーモデルでデフォルト有効）で制御。
 
 ```python
+# 調査段階の設計案
 class SynthesizerTrn(nn.Module):
     def __init__(self, ..., use_speaker_encoder=False, speaker_embed_dim=192):
         ...
-        # 既存: speaker-id mode (常に保持)
         if n_speakers > 1:
             self.emb_g = nn.Embedding(n_speakers, gin_channels)
-
-        # 新規: zero-shot mode
         if use_speaker_encoder:
             self.speaker_encoder = SpeakerEncoder(mel_channels=80, gin_channels=gin_channels)
 
-    def _get_speaker_embedding(self, sid=None, ref_mel=None, ref_mel_lengths=None):
-        """Dual-mode: speaker_id または参照音声から g を生成"""
-        if ref_mel is not None and hasattr(self, 'speaker_encoder'):
-            g = self.speaker_encoder(ref_mel, ref_mel_lengths).unsqueeze(-1)
-        elif sid is not None and self.n_speakers > 1:
-            g = self.emb_g(sid).unsqueeze(-1)
+# 最終実装（models.py）
+class SynthesizerTrn(nn.Module):
+    def __init__(self, ..., use_zero_shot=False, spk_embed_dim=192):
+        ...
+        if n_speakers > 1:
+            self.emb_g = nn.Embedding(n_speakers, gin_channels)  # speaker ID用
+        if use_zero_shot:
+            self.spk_proj = nn.Linear(spk_embed_dim, gin_channels)  # 192→512射影
+
+    def forward(self, ..., sid=None, speaker_embedding=None):
+        if speaker_embedding is not None and hasattr(self, "spk_proj"):
+            g = self.spk_proj(speaker_embedding).unsqueeze(-1)  # [b, gin_channels, 1]
+        elif sid is not None and hasattr(self, "emb_g"):
+            g = self.emb_g(sid).unsqueeze(-1)                   # [b, gin_channels, 1]
         else:
             g = None
-        return g  # [batch, gin_channels, 1] — 下流モジュールへの共通インターフェース
 ```
 
-**重要**: `g` の形状 `[batch, gin_channels, 1]` が共通なので、下流の4コンポーネント（Duration Predictor, Posterior Encoder, Flow, Decoder）は一切変更不要。
+**重要**: `g` の形状 `[batch, gin_channels, 1]` が共通なので、下流の4コンポーネント（Duration Predictor, Posterior Encoder, Flow, Decoder）は一切変更不要。`gin_channels=512` が最終値（768はガビガビ音発生のため不採用）。
 
 ### 8.2 ONNX推論でのdual-mode対応
 
-1モデル統合 + Optional入力方式を推奨:
+> **最終実装 (2026-03-10)**: 1モデル統合ではなく、`--export-mode {auto, sid, zero-shot}` で**別々のONNXモデル**として出力する方式を採用。sid用モデルは`sid`入力、zero-shot用モデルは`speaker_embedding`入力を持つ。ref_mel入力方式は採用せず、事前計算済みの192次元embeddingを直接入力する。
+
+調査段階では1モデル統合 + Optional入力方式を想定:
 
 ```python
-# export_onnx.py: 入力にref_melを追加
+# 調査段階の設計案
 input_names = ["input", "input_lengths", "scales"]
 if num_speakers > 1:
     input_names.append("sid")
 if use_speaker_encoder:
     input_names.append("ref_mel")  # optional入力
-if has_prosody:
-    input_names.append("prosody_features")
+
+# 最終実装（export_onnx.py）
+# --export-mode sid: input_names = ["input", "input_lengths", "scales", "sid", ...]
+# --export-mode zero-shot: input_names = ["input", "input_lengths", "scales", "speaker_embedding", ...]
 ```
 
 ```python
-# infer_onnx.py: 推論時の切り替え
-if args.ref_audio:
-    # zero-shot mode: mel-spectrogramを計算してTTSモデルに渡す
-    ref_mel = compute_mel_from_wav(args.ref_audio)
-    inputs["ref_mel"] = ref_mel
+# 最終実装（infer_onnx.py）
+if args.speaker_embedding:
+    spk_emb = np.load(args.speaker_embedding)  # 事前計算済み192次元embedding
+    inputs["speaker_embedding"] = spk_emb.reshape(1, -1)
 elif args.speaker_id is not None:
-    # speaker-id mode: 従来通り
     inputs["sid"] = np.array([args.speaker_id], dtype=np.int64)
 ```
 
 ### 8.3 Speaker Encoder分離設計
 
+> **最終実装 (2026-03-10)**: この分離設計が最終的に採用された。CAM++ ONNX (`campplus.onnx`) をオフラインツール (`extract_speaker_embedding.py`) で使用し、事前計算済み `.npy` ファイルを推論時に読み込む方式。
+
 Speaker Encoderを別ONNXモデルとして分離し、embeddingキャッシュに対応:
 
 ```
-推論パイプライン:
-  ref_audio → [Speaker Encoder ONNX] → spk_emb → キャッシュ保存
-                                          ↓
-  text → [Piper TTS ONNX (+ spk_emb)] → audio
+推論パイプライン（最終実装）:
+  ref_audio → [CAM++ ONNX (extract_speaker_embedding.py)] → speaker.npy (192次元)
+                                                               ↓
+  text → [Piper TTS ONNX (spk_proj: 192→512)] → audio
 ```
 
 **embeddingキャッシュの利点:**
 - 同一話者の2回目以降の推論でSpeaker Encoder不要
-- CPU推論時のレイテンシ削減（初回~50ms → 2回目以降0ms）
-- 事前登録話者を `--speaker-id` 感覚で呼び出し可能
+- CPU推論時のレイテンシ削減（0ms追加）
+- 事前登録話者を `.npy` ファイルで呼び出し可能
 
 ### 8.4 チェックポイント互換性
+
+> **最終実装 (2026-03-10)**: `strict=False` でロード。`spk_proj` はランダム初期化される。
 
 ```python
 # 既存チェックポイントからの移行
 model = VitsModel.load_from_checkpoint(ckpt_path, strict=False)
-# strict=False により speaker_encoder 部分がない場合でもロード可能
-# speaker_encoder はランダム初期化 → Phase 2以降で学習
+# strict=False により spk_proj 部分がない場合でもロード可能
+# spk_proj はランダム初期化 → 学習で最適化
 ```
 
 **段階的移行パス:**
 1. `strict=False` で既存チェックポイントをロード → `emb_g` はそのまま使える
-2. `speaker_encoder` 部分のみを学習（`emb_g` は凍結）
-3. 完全なdual-mode対応モデルが完成
+2. Per-utterance embeddingを事前計算 (`extract_speaker_embedding.py --per-utterance`)
+3. 学習開始 → `spk_proj` が最適化される
+4. `--export-mode sid` / `--export-mode zero-shot` でONNXモデルを出力
 
 ### 8.5 維持される既存機能一覧
 
+> **最終確認 (2026-03-10)**: 全機能の互換性を実装で確認済み。
+
 | 機能 | 互換性 | 備考 |
 |------|--------|------|
-| `--speaker-id` による話者指定 | 完全互換 | `emb_g` をそのまま保持 |
+| `--speaker-id` による話者指定 | 完全互換 | `emb_g` をそのまま保持（`--export-mode sid`で出力） |
+| `--speaker-embedding` による零ショット | **新規** | `spk_proj` で192→512射影（`--export-mode zero-shot`で出力） |
 | 日本語/英語 Phonemizer | 影響なし | 独立モジュール |
 | Prosody Features (A1/A2/A3) | 影響なし | Duration Predictorへの入力は変更なし |
-| ONNX推論 | 互換 | optional入力追加のみ |
-| CPU推論 | 互換 | Speaker Encoder ~50ms追加 (初回のみ) |
-| WavLM Discriminator | 互換 | 学習時のみ、独立 |
+| ONNX推論 | 互換 | `--export-mode` で入力形式を分離 |
+| CPU推論 | 互換 | Speaker Encoderは推論パイプライン外（追加コスト0） |
+| WavLM Discriminator | 互換 | 学習時のみ、`--no-wavlm` で無効化可能 |
 | EMA重み | 互換 | export_onnxの処理は変更なし |
 
 ---
@@ -652,10 +686,13 @@ YourTTSの実験で、英語+他言語の混合学習がzero-shot性能を向上
 
 ### 9.2 3フェーズ学習スケジュール
 
+> **最終実装 (2026-03-10)**: 下記は調査段階の計画。実際の学習ではSpeaker Encoderをモデルに組み込まず、CAM++ ONNXで事前計算したper-utterance embeddingを使用。学習環境はRTX 6000 Ada 48GB x1、batch_size=160、samples_per_speaker=8、bf16-mixed、`--no-wavlm`、200 epochs。Speaker Encoderの凍結/解凍は不要（モデル外部で事前計算するため）。
+
 #### Phase 1: Speaker Encoder準備（学習時間ゼロ）
-- **方法**: SpeechBrain事前学習済みECAPA-TDNNを採用
-- **モデル**: `spkrec-ecapa-voxceleb` (Apache-2.0)
+- **方法**: SpeechBrain事前学習済みECAPA-TDNNを採用 → **最終: CAM++ ONNX (27MB, Apache-2.0)**
+- **モデル**: `spkrec-ecapa-voxceleb` (Apache-2.0) → **最終: `campplus.onnx` (CosyVoice-300Mリポジトリから取得)**
 - 学習不要、ダウンロードのみ
+- **追加**: per-utterance embedding抽出 (`extract_speaker_embedding.py --per-utterance`) でdataset.jsonlを更新
 
 #### Phase 2: TTS本体学習 — Speaker Encoder凍結
 - **データ**: LibriTTS-R + JVS + 現行20話者 (~615h)
@@ -672,6 +709,17 @@ YourTTSの実験で、英語+他言語の混合学習がzero-shot性能を向上
 - **推定学習時間**: **約120-160時間** (L4 x4)
 
 **注意**: Phase 2ではWavLM Discriminatorを無効化し、Phase 3で有効化する戦略が有効（GPUメモリ制約）。
+
+> **実際の学習設定 (2026-03-10)**: Speaker Encoder外部化によりPhase 2/3の区別は不要に。実際のコマンド:
+> ```bash
+> uv run python -m piper_train \
+>   --dataset-dir /home/shadeform/data/piper/dataset-moe-speech-20speakers \
+>   --prosody-dim 16 --accelerator gpu --devices 1 --precision bf16-mixed \
+>   --max_epochs 200 --batch-size 160 --samples-per-speaker 8 \
+>   --checkpoint-epochs 2 --quality medium --base_lr 2e-4 \
+>   --ema-decay 0.9995 --num-workers 8 --no-wavlm \
+>   --default_root_dir /home/shadeform/data/piper/output-moe-speech-20speakers
+> ```
 
 ### 9.3 損失関数の組み合わせ
 
@@ -698,13 +746,15 @@ YourTTS/XTTS/Coqui TTSで広く使用。実装コストが低く効果が高い�
 
 ### 9.4 GPUメモリ見積もり (L4 16GB)
 
+> **最終環境 (2026-03-10)**: RTX 6000 Ada 48GBを使用。Speaker Encoderはモデル外部のため学習時メモリ不要。WavLM Discriminatorは`--no-wavlm`で無効化。batch_size=160が可能。
+
 | コンポーネント | メモリ | 備考 |
 |--------------|-------|------|
 | VITS本体 | ~8GB | 現行と同等 |
-| Speaker Encoder (ECAPA-TDNN) | ~1-2GB | 学習時/推論時 |
-| WavLM Discriminator | ~1-2GB | 学習時のみ |
+| Speaker Encoder (ECAPA-TDNN) | ~1-2GB | 学習時/推論時 → **最終: 外部化のため0** |
+| WavLM Discriminator | ~1-2GB | 学習時のみ → **最終: --no-wavlmで無効化** |
 | データ/勾配 | ~3-4GB | batch_size依存 |
-| **合計** | **~13-16GB** | ギリギリ収まる |
+| **合計** | **~13-16GB** | ギリギリ収まる → **最終: RTX 6000 Ada 48GBで余裕** |
 
 ### 9.5 評価指標と自動評価パイプライン
 
@@ -729,9 +779,11 @@ YourTTS/XTTS/Coqui TTSで広く使用。実装コストが低く効果が高い�
 
 > 追加調査 (2026-03-07): Piperコードベースを分析した上での具体的な変更計画。
 
+> **最終実装 (2026-03-10)**: 下記の実装計画は調査段階のもの。最終実装ではSpeaker Encoderクラス (`speaker_encoder.py`) は新規作成せず、`spk_proj = nn.Linear(spk_embed_dim, gin_channels)` としてSynthesizerTrn内に直接実装。Speaker Encoding処理は `extract_speaker_embedding.py` としてオフラインツールに分離。ref_mel入力方式は採用せず、事前計算済みembedding (192次元 .npy) を直接入力する設計。
+
 ### 10.1 新規ファイル
 
-#### `src/python/piper_train/vits/speaker_encoder.py` (~200行)
+#### `src/python/piper_train/vits/speaker_encoder.py` (~200行) — **未採用: 代わりにextract_speaker_embedding.pyを実装**
 
 ```python
 class SpeakerEncoder(nn.Module):
@@ -770,26 +822,28 @@ class AttentiveStatisticsPooling(nn.Module):
 
 #### `models.py` — SynthesizerTrn (~30行追加)
 
-```python
-# __init__: speaker encoder対応追加
-def __init__(self, ..., use_speaker_encoder=False):
-    ...
-    if n_speakers > 1:
-        self.emb_g = nn.Embedding(n_speakers, gin_channels)  # 既存維持
-    self.use_speaker_encoder = use_speaker_encoder
-    if use_speaker_encoder:
-        from .speaker_encoder import SpeakerEncoder
-        self.speaker_encoder = SpeakerEncoder(
-            mel_channels=80, gin_channels=gin_channels)
+> **最終実装 (2026-03-10)**: 下記は調査段階の設計案。最終実装では `use_zero_shot=False, spk_embed_dim=192` パラメータで、`spk_proj = nn.Linear(spk_embed_dim, gin_channels)` として実装。Speaker Encoderクラスは組み込まず、事前計算embeddingを `speaker_embedding` 引数で受け取る。
 
-# forward/infer: dual-mode対応
+```python
+# 調査段階の設計案
+def __init__(self, ..., use_speaker_encoder=False):
+    if n_speakers > 1:
+        self.emb_g = nn.Embedding(n_speakers, gin_channels)
+    if use_speaker_encoder:
+        self.speaker_encoder = SpeakerEncoder(mel_channels=80, gin_channels=gin_channels)
+
+# 最終実装（models.py）
+def __init__(self, ..., use_zero_shot=False, spk_embed_dim=192):
+    if n_speakers > 1:
+        self.emb_g = nn.Embedding(n_speakers, gin_channels)  # speaker ID用
+    if use_zero_shot:
+        self.spk_proj = nn.Linear(spk_embed_dim, gin_channels)  # 192→512
+
 def forward(self, x, x_lengths, y, y_lengths, sid=None,
-            prosody_features=None,
-            ref_mel=None, ref_mel_lengths=None):  # NEW
-    ...
-    if self.use_speaker_encoder and ref_mel is not None:
-        g = self.speaker_encoder(ref_mel, ref_mel_lengths).unsqueeze(-1)
-    elif self.n_speakers > 1 and sid is not None:
+            prosody_features=None, speaker_embedding=None):
+    if speaker_embedding is not None and hasattr(self, "spk_proj"):
+        g = self.spk_proj(speaker_embedding).unsqueeze(-1)
+    elif sid is not None and hasattr(self, "emb_g"):
         g = self.emb_g(sid).unsqueeze(-1)
     else:
         g = None
@@ -798,116 +852,142 @@ def forward(self, x, x_lengths, y, y_lengths, sid=None,
 
 #### `lightning.py` — 学習ループ (~40行追加)
 
-```python
-# training_step_g: ref_mel生成 + Speaker Consistency Loss
-def training_step_g(self, batch):
-    ...
-    # Self-reconstruction: 同一発話のmelを参照として使用
-    ref_mel = spec_to_mel_torch(spec, ...)
+> **最終実装 (2026-03-10)**: ref_mel方式ではなく、dataset.jsonlから事前計算済みspeaker_embeddingをロードして`model_g.forward(..., speaker_embedding=speaker_embeddings)`に渡す方式。`use_zero_shot=True`がデフォルト（マルチスピーカーモデル）。DINO center bufferを初期化。c_spk=9.0, c_dino=0.1がデフォルト値。
 
+```python
+# 調査段階の設計案（ref_mel方式）
+def training_step_g(self, batch):
+    ref_mel = spec_to_mel_torch(spec, ...)
+    (y_hat, l_length, ...) = self.model_g(
+        x, x_lengths, spec, spec_lengths, speaker_ids,
+        ref_mel=ref_mel, ref_mel_lengths=spec_lengths)
+
+# 最終実装（事前計算embedding方式）
+def training_step_g(self, batch):
+    speaker_embeddings = batch.speaker_embeddings  # from dataset.jsonl
     (y_hat, l_length, ...) = self.model_g(
         x, x_lengths, spec, spec_lengths, speaker_ids,
         prosody_features=prosody_features,
-        ref_mel=ref_mel, ref_mel_lengths=spec_lengths)
-
-    # Speaker Consistency Loss
-    if self.model_g.use_speaker_encoder:
-        gen_mel = mel_spectrogram_torch(y_hat.squeeze(1), ...)
-        ref_emb = self.model_g.speaker_encoder(ref_mel, spec_lengths)
-        gen_emb = self.model_g.speaker_encoder(gen_mel)
-        loss_spk = F.cosine_embedding_loss(
-            ref_emb, gen_emb,
-            torch.ones(ref_emb.size(0), device=ref_emb.device))
-        loss_gen_all += loss_spk * self.hparams.c_spk
+        speaker_embedding=speaker_embeddings)
 ```
 
 #### `export_onnx.py` (~30行追加)
 
+> **最終実装 (2026-03-10)**: ref_mel方式ではなく `--export-mode {auto, sid, zero-shot}` で出力を分離。zero-shotモードでは `speaker_embedding` (float32[batch, 192]) を入力として受け取る。
+
 ```python
-# ref_mel入力の追加
+# 調査段階の設計案
 if model_g.use_speaker_encoder:
     input_names.append("ref_mel")
-    dynamic_axes["ref_mel"] = {0: "batch_size", 2: "ref_time"}
+
+# 最終実装
+if use_zero_shot:
+    input_names.append("speaker_embedding")
+    dynamic_axes["speaker_embedding"] = {0: "batch_size"}
 ```
 
 #### `infer_onnx.py` (~50行追加)
 
-```python
-# 新しいCLI引数
-parser.add_argument("--ref-audio", help="Reference WAV for zero-shot cloning")
-parser.add_argument("--speaker-encoder", help="Speaker encoder ONNX (optional)")
-parser.add_argument("--speaker-embeddings", help="Cached embeddings JSON (optional)")
+> **最終実装 (2026-03-10)**: `--speaker-embedding` で .npy ファイルを指定。`--ref-audio` は未実装。
 
-# ref_audio処理
-if args.ref_audio:
-    ref_wav, sr = librosa.load(args.ref_audio, sr=22050)
-    ref_mel = compute_mel_from_wav(ref_wav)
-    inputs["ref_mel"] = ref_mel
+```python
+# 最終実装のCLI引数
+parser.add_argument("--speaker-embedding", help="Pre-computed embedding .npy file")
+
+# 推論時
+if args.speaker_embedding:
+    spk_emb = np.load(args.speaker_embedding).astype(np.float32)
+    inputs["speaker_embedding"] = spk_emb.reshape(1, -1)
 ```
 
 #### `__main__.py` (~15行追加)
 
+> **最終実装 (2026-03-10)**: `--use-speaker-encoder` フラグは不要（`use_zero_shot=True`がデフォルト）。`c_spk=9.0`、`c_dino=0.1` が `lightning.py` のデフォルト値。
+
 ```python
+# 調査段階の設計案
 parser.add_argument("--use-speaker-encoder", action="store_true")
 parser.add_argument("--c-spk", type=float, default=1.0)
-parser.add_argument("--c-dino", type=float, default=0.1)
-parser.add_argument("--speaker-encoder-pretrained", type=str, default=None)
+
+# 最終実装: フラグ不要（マルチスピーカーなら自動有効化）
+# lightning.py: use_zero_shot=True, c_spk=9.0, c_dino=0.1 がデフォルト
 ```
 
 ### 10.3 変更対象ファイル一覧
 
-| ファイル | 変更種別 | 変更規模 |
+> **最終実装 (2026-03-10)**: 実際に変更/新規作成されたファイルと、調査時の計画との対比。
+
+| ファイル（調査時計画） | 変更種別 | 最終実装の状態 |
 |---------|---------|---------|
-| `vits/speaker_encoder.py` | **新規** | ~200行 |
-| `vits/models.py` | 修正 | ~30行追加 |
-| `vits/lightning.py` | 修正 | ~40行追加 |
-| `vits/dataset.py` | 修正 | ~20行追加 |
-| `export_onnx.py` | 修正 | ~30行追加 |
-| `infer_onnx.py` | 修正 | ~50行追加 |
-| `__main__.py` | 修正 | ~15行追加 |
-| `vits/losses.py` | 修正 | ~10行追加 |
-| `test/test_speaker_encoder.py` | **新規** | ~100行 |
-| `test/test_zero_shot_integration.py` | **新規** | ~150行 |
+| `vits/speaker_encoder.py` | **新規** | **未作成** — `spk_proj` として `models.py` 内に1行で実装 |
+| `vits/models.py` | 修正 | **実装済み** — `spk_proj`, `use_zero_shot`, Dual-Mode forward |
+| `vits/lightning.py` | 修正 | **実装済み** — `use_zero_shot=True` デフォルト, DINO center buffer |
+| `vits/dataset.py` | 修正 | **実装済み** — `speaker_embedding_path` / per-utterance embedding読み込み |
+| `export_onnx.py` | 修正 | **実装済み** — `--export-mode {auto, sid, zero-shot}` |
+| `infer_onnx.py` | 修正 | **実装済み** — `--speaker-embedding` オプション |
+| `__main__.py` | 修正 | **実装済み** — zero-shotはフラグ不要（自動有効化） |
+| `extract_speaker_embedding.py` | **計画になし** | **新規作成** — CAM++ ONNXでオフラインembedding抽出 (~680行) |
+| `prepare_zero_shot_dataset.py` | **計画になし** | **新規作成** — 複数コーパス統合ツール |
+| `vits/losses.py` | 修正 | 変更なし |
+| `test/test_speaker_encoder.py` | **新規** | 未作成 |
+| `test/test_zero_shot_integration.py` | **新規** | 未作成 |
 
 ### 10.4 パラメータ数の増加
 
+> **最終実装 (2026-03-10)**: Speaker Encoderはモデル外部化されたため、ONNXモデルにはEncoder含まれない。追加されるのは `spk_proj` (nn.Linear(192, 512)) のみ。
+
 | コンポーネント | パラメータ数 | ONNXサイズ増加 |
 |--------------|------------|---------------|
-| ECAPA-TDNN Speaker Encoder | ~6-8M | +25-30MB |
-| 推論速度への影響 | Speaker Encoder forward 1回 | ~5ms (CPU), ~1ms (GPU) |
+| ~~ECAPA-TDNN Speaker Encoder~~ | ~~6-8M~~ | ~~+25-30MB~~ → **モデル外部化のため0** |
+| spk_proj (nn.Linear(192, 512)) | ~98K | <0.5MB |
+| 推論速度への影響 | Linear(192→512) 1回 | ~数μs（実質ゼロ） |
+| 本番ONNXモデルサイズ | - | 74MB (`moe-speech-20speakers-v2.onnx`) |
 
 ### 10.5 学習コマンド例
 
+> **最終実装 (2026-03-10)**: `--use-speaker-encoder` フラグは不要（マルチスピーカーなら自動有効化）。`--zero-shot` フラグも削除済み。
+
 ```bash
-# Phase 2: Speaker Encoder凍結、TTS本体学習
+# 調査段階のコマンド（参考）
 NCCL_DEBUG=WARN NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1 \
 uv run python -m piper_train \
   --dataset-dir /data/piper/dataset-multispeaker-merged \
-  --prosody-dim 16 \
-  --use-speaker-encoder \
-  --c-spk 1.0 \
+  --prosody-dim 16 --use-speaker-encoder --c-spk 1.0 \
   --accelerator gpu --devices 4 --precision 16-mixed \
   --max_epochs 200 --batch-size 10 --samples-per-speaker 2 \
   --checkpoint-epochs 1 --quality medium \
   --base_lr 2e-4 --disable_auto_lr_scaling \
   --ema-decay 0.9995 --num-workers 0 --no-pin-memory \
   --default_root_dir /data/piper/output-zero-shot-phase2
+
+# 最終実装のコマンド（RTX 6000 Ada 48GB x1）
+uv run python -m piper_train \
+  --dataset-dir /home/shadeform/data/piper/dataset-moe-speech-20speakers \
+  --prosody-dim 16 \
+  --accelerator gpu --devices 1 --precision bf16-mixed \
+  --max_epochs 200 --batch-size 160 --samples-per-speaker 8 \
+  --checkpoint-epochs 2 --quality medium \
+  --base_lr 2e-4 --ema-decay 0.9995 --num-workers 8 \
+  --no-wavlm \
+  --default_root_dir /home/shadeform/data/piper/output-moe-speech-20speakers
 ```
 
 ### 10.6 推論コマンド例
 
+> **最終実装 (2026-03-10)**: `--ref-audio` は未実装。事前計算済み `.npy` ファイルを `--speaker-embedding` で指定する方式。
+
 ```bash
-# Zero-shot: 参照音声から話者クローン
+# Zero-shot: 事前計算済みembeddingで推論
 CUDA_VISIBLE_DEVICES="" uv run python -m piper_train.infer_onnx \
-  --model /path/to/model-zeroshot.onnx \
+  --model /path/to/zero_shot_model.onnx \
   --config /path/to/config.json \
   --output-dir /path/to/output \
   --text "こんにちは、今日は良い天気ですね。" \
-  --ref-audio /path/to/reference_voice.wav
+  --speaker-embedding /path/to/speaker.npy
 
 # 従来のspeaker-idモード（完全互換）
 CUDA_VISIBLE_DEVICES="" uv run python -m piper_train.infer_onnx \
-  --model /path/to/model-zeroshot.onnx \
+  --model /path/to/sid_model.onnx \
   --config /path/to/config.json \
   --output-dir /path/to/output \
   --text "こんにちは、今日は良い天気ですね。" \
@@ -920,8 +1000,8 @@ CUDA_VISIBLE_DEVICES="" uv run python -m piper_train.infer_onnx \
 |--------|------|---------|
 | 既存機能regression | 全既存テスト通過、speaker-idモードの推論品質維持 | テスト全パス |
 | Speaker Encoder単体 | 出力形状、同一話者の類似度 | cosine similarity > 0.8 |
-| Zero-shot integration | 参照音声→生成音声の話者類似度 | SECS > 0.60 |
-| ONNX export/import | ref_mel入力あり/なし両方 | エラーなし |
+| Zero-shot integration | speaker_embedding→生成音声の話者類似度 | SECS > 0.60 |
+| ONNX export/import | `--export-mode sid` / `--export-mode zero-shot` 両方 | エラーなし |
 | Checkpoint migration | strict=Falseロード成功 | 既存モデル読み込み可 |
 | CPU推論 | CUDA_VISIBLE_DEVICES="" で動作 | 推論成功 |
 
@@ -1017,50 +1097,51 @@ Speaker Embeddingを完全にオフラインで事前計算し、`.npy`/`.json`�
 # 現在のONNXグラフ
 sid (int64) → [Gather: emb_g.weight] → g (float32, [1, gin_channels, 1])
 
-# 変更後のONNXグラフ（実装計画書の最終設計）
-speaker_embedding (float32, [1, 192]) → [Linear: spk_proj(192→768)] → [Unsqueeze] → g (float32, [1, 768, 1])
+# 変更後のONNXグラフ（最終実装）
+speaker_embedding (float32, [1, 192]) → [Linear: spk_proj(192→512)] → [Unsqueeze] → g (float32, [1, 512, 1])
 ```
 
-変わるのは入力付近のGather → Linear+Unsqueezeへの変更のみ。Linear(192→768)の演算コストは数μsであり、計算量の99.9%以上を占めるEncoder/Flow/Decoder部分は**完全に同一**。
+変わるのは入力付近のGather → Linear+Unsqueezeへの変更のみ。Linear(192→512)の演算コストは数μsであり、計算量の99.9%以上を占めるEncoder/Flow/Decoder部分は**完全に同一**。
 
-> **注**: gin_channelsは`__main__.py`でマルチスピーカーモデルの場合 768 に設定される。CAM++の出力(192次元)は`nn.Linear(192, 768)`でONNXグラフ内で射影される。
+> **注**: gin_channelsは`lightning.py`でマルチスピーカーまたはzero-shotモデルの場合 **512** に自動設定される（`gin_channels <= 0` の場合）。768ではガビガビ音が発生したため512を採用。CAM++の出力(192次元)は`nn.Linear(192, 512)`でONNXグラフ内で射影される。
 
 #### 速度同一性の根拠
 
 1. **Gatherオペレーション（現在）のコスト**: テーブルから1行取得 = O(gin_channels)のメモリコピー = 数μs
-2. **Linear+Unsqueezeオペレーション（変更後）のコスト**: 192*768の行列乗算+reshape = 数μs
+2. **Linear+Unsqueezeオペレーション（変更後）のコスト**: 192*512の行列乗算+reshape = 数μs
 3. **両者の差**: 実質ゼロ（VITS全体の推論時間の0.001%未満）
 4. **実証**: Coqui TTS (YourTTS) が `nn.Embedding` (speaker_id方式) と `d_vector` (外部embedding方式) の両方をサポートし、推論速度に有意差がないことを確認済み
 
 #### export_onnx.py の変更
 
+> **最終実装 (2026-03-10)**: `--export-mode {auto, sid, zero-shot}` フラグで出力モデルを分離。`auto`はモデルの`use_zero_shot`属性から自動判定。
+
 ```python
-# 変更前
-if model_g.n_speakers > 1 and sid is not None:
+# 調査段階の設計案
+if speaker_embedding is not None:
+    g = speaker_embedding.unsqueeze(-1)
+elif model_g.n_speakers > 1 and sid is not None:
     g = model_g.emb_g(sid).unsqueeze(-1)
 
-# 変更後
-if speaker_embedding is not None:
-    g = speaker_embedding.unsqueeze(-1)  # zero-shot / 事前計算embedding
+# 最終実装（export_onnx.py の infer_forward 関数内）
+if use_zero_shot:
+    g = model_g.spk_proj(speaker_embedding).unsqueeze(-1)  # [b, 512, 1]
 elif model_g.n_speakers > 1 and sid is not None:
-    g = model_g.emb_g(sid).unsqueeze(-1)  # 従来互換
+    g = model_g.emb_g(sid).unsqueeze(-1)  # [b, 512, 1]
 ```
 
 #### infer_onnx.py の変更
 
+> **最終実装 (2026-03-10)**: `--speaker-embedding` オプションで .npy ファイルを指定。`--ref-audio` は未実装（オフラインで `extract_speaker_embedding.py` を使用する設計）。
+
 ```python
-# 新しいCLI引数
-parser.add_argument("--ref-audio", help="参照音声WAV（初回embedding計算用）")
+# 最終実装のCLI引数
 parser.add_argument("--speaker-embedding", help="事前計算済みembedding (.npy)")
 
 # 推論時
 if args.speaker_embedding:
     # 事前計算済みembeddingをロード（<1ms）
     spk_emb = np.load(args.speaker_embedding).astype(np.float32)
-    inputs["speaker_embedding"] = spk_emb.reshape(1, -1)
-elif args.ref_audio:
-    # Speaker Encoderで計算（オフラインツールを推奨）
-    spk_emb = extract_speaker_embedding(args.ref_audio)
     inputs["speaker_embedding"] = spk_emb.reshape(1, -1)
 elif args.speaker_id is not None:
     inputs["sid"] = np.array([args.speaker_id], dtype=np.int64)
@@ -1097,6 +1178,11 @@ elif args.speaker_id is not None:
 - WeSpeaker: `wespeaker/wespeaker-models` (HuggingFace)
 - 3D-Speaker: `iic/speech_campplus_sv_zh-cn_16k-common` (ModelScope)
 - sherpa-onnx: ONNX + INT8量子化済みモデル提供
+- **最終採用**: CosyVoice-300Mリポジトリの `campplus.onnx` (27MB, Apache-2.0)
+  ```bash
+  wget -q "https://huggingface.co/model-scope/CosyVoice-300M/resolve/main/campplus.onnx" \
+    -O /home/shadeform/data/piper/models/campplus.onnx
+  ```
 
 #### 次点: ECAPA-TDNN (SpeechBrain, Apache-2.0)
 
@@ -1104,45 +1190,68 @@ elif args.speaker_id is not None:
 
 ### 11.6 事前計算ツール設計
 
+> **実装済み (2026-03-10)**: `extract_speaker_embedding.py` として実装。per-utteranceモードではDataLoader + バッチONNX推論で高速化。
+
 ```bash
 # 新規話者のembedding抽出（オフライン、1回のみ）
 uv run python -m piper_train.extract_speaker_embedding \
-  --encoder /path/to/cam++.onnx \
+  --encoder /home/shadeform/data/piper/models/campplus.onnx \
   --audio /path/to/reference_voice.wav \
   --output /path/to/speaker_embedding.npy
 
-# 既存モデルの全話者embeddingを一括抽出
+# Per-utterance embedding抽出（学習用・推奨）
 uv run python -m piper_train.extract_speaker_embedding \
-  --encoder /path/to/cam++.onnx \
-  --dataset-dir /data/piper/dataset-moe-speech-20speakers-v2 \
-  --output-dir /path/to/embeddings/
+  --encoder /home/shadeform/data/piper/models/campplus.onnx \
+  --dataset-dir /home/shadeform/data/piper/dataset-moe-speech-20speakers \
+  --per-utterance --batch-size 64 --num-workers 12
+
+# Per-speaker embedding抽出（推論用reference）
+uv run python -m piper_train.extract_speaker_embedding \
+  --encoder /home/shadeform/data/piper/models/campplus.onnx \
+  --dataset-dir /home/shadeform/data/piper/dataset-moe-speech-20speakers \
+  --output-dir /path/to/embeddings
 ```
 
-**出力ファイル構成**:
+**出力ファイル構成（per-utterance）**:
+```
+dataset-dir/
+├── speaker_embeddings/
+│   ├── {audio_stem_1}.npy    # float32[192] (896バイト)
+│   ├── {audio_stem_2}.npy
+│   └── ...
+├── dataset.jsonl             # speaker_embedding_path が自動追加される
+└── dataset.jsonl.bak         # バックアップ
+```
+
+**出力ファイル構成（per-speaker）**:
 ```
 embeddings/
-├── speaker_0.npy    # float32[gin_channels]
+├── speaker_0.npy    # float32[192]
 ├── speaker_1.npy
 ├── ...
-├── speaker_19.npy
-└── speakers.json    # {"speaker_0": "speaker_0.npy", ...}
+└── speaker_19.npy
 ```
 
 ### 11.7 既存話者の移行パス
 
+> **最終実装 (2026-03-10)**: Dual-Modeモデルでは `emb_g` と `spk_proj` が共存するため、既存のspeaker IDモードはそのまま使える。zero-shot推論用には `--export-mode zero-shot` でONNXを別途出力する。
+
 既存のspeaker_idモデルからの移行は以下の手順で実現:
 
-1. 学習済みモデルの `emb_g.weight` から各話者のembeddingを抽出
+1. 学習済みモデルの学習データから各話者のCAM++ embeddingを抽出（`extract_speaker_embedding.py`）
 2. `.npy` ファイルとして保存
-3. `config.json` に `speaker_embedding_map` を追加
-4. 新ONNXモデルをエクスポート（`speaker_embedding` 入力対応）
+3. `--export-mode zero-shot` で新ONNXモデルをエクスポート
+4. `--speaker-embedding speaker_X.npy` で推論
 
-```python
-# 既存emb_gからembeddingを抽出
-checkpoint = torch.load("last.ckpt")
-emb_weights = checkpoint["state_dict"]["model_g.emb_g.weight"]  # [n_speakers, gin_channels]
-for i in range(emb_weights.shape[0]):
-    np.save(f"embeddings/speaker_{i}.npy", emb_weights[i].numpy())
+```bash
+# 既存データセットからCAM++ embeddingを抽出
+uv run python -m piper_train.extract_speaker_embedding \
+  --encoder /home/shadeform/data/piper/models/campplus.onnx \
+  --dataset-dir /path/to/dataset --output-dir /path/to/embeddings
+
+# zero-shot用ONNXモデルをエクスポート
+CUDA_VISIBLE_DEVICES="" uv run python -m piper_train.export_onnx \
+  --export-mode zero-shot /path/to/checkpoint.ckpt /path/to/output_zs.onnx
 ```
 
 ### 11.8 OSS実装の事前計算方式の採用実績
@@ -1169,13 +1278,13 @@ for i in range(emb_weights.shape[0]):
 
 ### 11.10 更新された推奨ロードマップ
 
-| フェーズ | 内容 | 推論速度影響 | 工数 |
-|---------|------|------------|------|
-| **Phase 1a** | 事前計算embedding方式のONNX対応 | **ゼロ** | 2-3日 |
-| **Phase 1b** | CAM++ Speaker Encoder統合（オフラインツール） | なし（推論時不使用） | 1-2日 |
-| **Phase 1c** | TTS本体の学習（Speaker Embedding条件付け） | **ゼロ** | 学習180-240h |
-| Phase 2 | TextEncoder Speaker Conditioning | **ゼロ** | 1-2日 + 再学習 |
-| Phase 3 | MB-iSTFT-VITSデコーダ高速化 | **推論4倍高速化** | 3-5日 + 再学習 |
+| フェーズ | 内容 | 推論速度影響 | 工数 | 状態 |
+|---------|------|------------|------|------|
+| **Phase 1a** | 事前計算embedding方式のONNX対応 | **ゼロ** | 2-3日 | **完了** |
+| **Phase 1b** | CAM++ Speaker Encoder統合（オフラインツール） | なし（推論時不使用） | 1-2日 | **完了** |
+| **Phase 1c** | TTS本体の学習（Speaker Embedding条件付け） | **ゼロ** | 200 epochs | **完了** |
+| Phase 2 | TextEncoder Speaker Conditioning | **ゼロ** | 1-2日 + 再学習 | 未着手 |
+| Phase 3 | MB-iSTFT-VITSデコーダ高速化 | **推論4倍高速化** | 3-5日 + 再学習 | 未着手 |
 
 ---
 
@@ -1193,17 +1302,22 @@ Piperの「軽量・高速推論」要件を完全に維持しつつ、zero-shot
 
 1. **Speaker Encoderは推論パイプラインに含めない**: オフラインツールとして分離
 2. **事前計算したembeddingをファイルから読み込み**: 推論時の追加コスト <1ms
-3. **ONNXモデルの変更は入力の型変更のみ**: `sid (int64)` → `speaker_embedding (float32[gin_channels])`
+3. **ONNXモデルの変更は入力の型変更のみ**: `sid (int64)` → `speaker_embedding (float32[192])`（`spk_proj`で512次元に射影）
 4. **計算グラフの99.9%以上は完全に同一**: 推論速度はゼロインパクト
+5. **gin_channels=512**: 768はガビガビ音が発生、256は表現力不足
 
 #### 前回推奨からの変更点
 
-| 項目 | 前回推奨 | 今回推奨（更新） |
+| 項目 | 前回推奨 | 最終実装 (2026-03-10) |
 |------|---------|----------------|
-| Speaker Encoder | ECAPA-TDNN (SpeechBrain) | **CAM++** (精度/効率で優位) |
-| 推論時のEncoder実行 | あり（初回のみ） | **なし（完全にオフライン分離）** |
-| 損失関数 | DINO Loss + SCL Loss | DINO Loss + SCL Loss（変更なし） |
-| ONNX設計 | ref_mel入力 + モデル内Encoder | **speaker_embedding入力（Encoder外部化）** |
+| Speaker Encoder | ECAPA-TDNN (SpeechBrain) | **CAM++ ONNX** (27MB, 192次元, Apache-2.0) |
+| 推論時のEncoder実行 | あり（初回のみ） | **なし（完全にオフライン分離: `extract_speaker_embedding.py`）** |
+| gin_channels | 768 | **512**（768はガビガビ音発生のため不採用） |
+| アーキテクチャ | SpeakerEncoder class内蔵 | **Dual-Mode: `emb_g` + `spk_proj` (nn.Linear(192, 512))** |
+| ONNX設計 | ref_mel入力 + モデル内Encoder | **`--export-mode {sid, zero-shot}` で分離出力** |
+| 学習フラグ | `--use-speaker-encoder` | **不要（`use_zero_shot=True` デフォルト）** |
+| 学習環境 | L4 16GB x4 | **RTX 6000 Ada 48GB x1, batch_size=160, bf16-mixed** |
+| Per-utterance embedding | 未計画 | **実装済み（DataLoader + バッチONNX推論で高速化）** |
 | 推論速度への影響 | 初回~50ms追加 | **実質ゼロ（<1ms）** |
 
 ---
