@@ -18,7 +18,7 @@ from .models import MultiPeriodDiscriminator, SynthesizerTrn, WavLMDiscriminator
 _LOGGER = logging.getLogger("vits.lightning")
 
 # Memory cleanup frequency (iterations)
-MEMORY_CLEANUP_FREQUENCY = 1000
+MEMORY_CLEANUP_FREQUENCY = 500
 
 
 class VitsModel(pl.LightningModule):
@@ -422,6 +422,7 @@ class VitsModel(pl.LightningModule):
         # Periodic memory cleanup (infrequent — GPU utilization is stable)
         if batch_idx % MEMORY_CLEANUP_FREQUENCY == 0:
             if torch.cuda.is_available():
+                torch.cuda.synchronize()
                 torch.cuda.empty_cache()
                 if batch_idx == 0:
                     _LOGGER.info(

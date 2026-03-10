@@ -108,10 +108,39 @@ class PiperDataset(Dataset):
         # 問題のあるファイルでロードが失敗した場合はスキップして次を試す
         while True:
             try:
-                audio_norm = _load_tensor(utt.audio_norm_path)
+                audio_norm = torch.load(
+                    utt.audio_norm_path, map_location="cpu", weights_only=True
+                )
                 if audio_norm.dim() == 1:
                     audio_norm = audio_norm.unsqueeze(0)
-                spectrogram = _load_tensor(utt.audio_spec_path)
+
+                # Load spectrogram: prefer .npy, fallback to .pt for
+                # backward compatibility with older caches.
+                spec_path = utt.audio_spec_path
+                if spec_path.suffix == ".npy" and spec_path.exists():
+                    spectrogram = torch.from_numpy(
+                        np.load(spec_path, allow_pickle=False)
+                    )
+                elif spec_path.suffix == ".npy":
+                    # .npy not found — try legacy .spec.pt
+                    legacy_pt = spec_path.with_suffix(".pt")
+                    if legacy_pt.exists():
+                        spectrogram = torch.load(
+                            legacy_pt, map_location="cpu", weights_only=True
+                        )
+                    else:
+                        raise FileNotFoundError(
+                            f"Spectrogram cache not found: {spec_path} or {legacy_pt}"
+                        )
+                elif spec_path.suffix == ".pt" and spec_path.exists():
+                    # Dataset still references .spec.pt directly
+                    spectrogram = torch.load(
+                        spec_path, map_location="cpu", weights_only=True
+                    )
+                else:
+                    raise FileNotFoundError(
+                        f"Spectrogram cache not found: {spec_path}"
+                    )
 
                 # Convert prosody_features to tensor if available
                 prosody_tensor = None
@@ -123,8 +152,6 @@ class PiperDataset(Dataset):
                 # Load speaker embedding from .npy file if available
                 speaker_embedding_tensor = None
                 if utt.speaker_embedding_path is not None:
-                    import numpy as np
-
                     spk_emb = np.load(
                         utt.speaker_embedding_path, allow_pickle=False
                     ).astype(np.float32)
@@ -203,10 +230,12 @@ class PiperDataset(Dataset):
         # spec shape: [filter_length // 2 + 1, T], stored as float32 (4 bytes)
         spec_channels = filter_length // 2 + 1
         bytes_per_frame = spec_channels * 4
-        # PyTorch .pt files have a ~2KB header; using a conservative (small)
-        # value ensures we overestimate spec_length rather than underestimate,
-        # so borderline-long utterances are correctly filtered out.
-        spec_header_bytes = 2048
+        # NumPy .npy files have a small header (~128 bytes).
+        # PyTorch .pt files have a ~2KB header.
+        # Using the smaller value (128) is conservative — it overestimates
+        # spec_length, so borderline-long utterances are correctly filtered out.
+        spec_header_bytes_npy = 128
+        spec_header_bytes_pt = 2048
 
         dataset_dir = dataset_path.parent
 
@@ -226,11 +255,16 @@ class PiperDataset(Dataset):
 
                     # Filter by spectrogram length using file size estimation.
                     # Uses os.path.getsize() (a single stat syscall) instead of
-                    # torch.load() to avoid loading every .spec.pt at init time.
+                    # loading every spec file at init time.
                     if max_spec_length is not None:
                         file_size = os.path.getsize(utt.audio_spec_path)
+                        header_bytes = (
+                            spec_header_bytes_npy
+                            if utt.audio_spec_path.suffix == ".npy"
+                            else spec_header_bytes_pt
+                        )
                         estimated_spec_length = (
-                            file_size - spec_header_bytes
+                            file_size - header_bytes
                         ) // bytes_per_frame
                         if estimated_spec_length > max_spec_length:
                             num_skipped_spec += 1

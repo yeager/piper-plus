@@ -359,13 +359,12 @@ class Generator(torch.nn.Module):
         for i, up in enumerate(self.ups):
             x = F.leaky_relu(x, self.LRELU_SLOPE)
             x = up(x)
-            xs = torch.zeros(1)
-            for j, resblock in enumerate(self.resblocks):
-                index = j - (i * self.num_kernels)
-                if index == 0:
-                    xs = resblock(x)
-                elif (index > 0) and (index < self.num_kernels):
-                    xs += resblock(x)
+            xs = None
+            for j in range(self.num_kernels):
+                if xs is None:
+                    xs = self.resblocks[i * self.num_kernels + j](x)
+                else:
+                    xs = xs + self.resblocks[i * self.num_kernels + j](x)
             x = xs / self.num_kernels
         x = F.leaky_relu(x)
         x = self.conv_post(x)

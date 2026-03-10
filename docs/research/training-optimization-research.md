@@ -33,6 +33,9 @@
 | parametrizations.weight_norm | torch.compile graph break解消, 15-30%高速化 | models.py, modules.py |
 | DataLoader prefetch_factor=2 | CPU→GPU転送オーバーラップ, 5-15%高速化 | lightning.py `train/val_dataloader()` |
 | Validation頻度削減 (5 epochごと) | 学習ループ 3-5%高速化 | __main__.py (`--val-every-n-epochs`, `--limit-val-batches`) |
+| ResBlock xs=None改善 | CPU tensor排除 + non-in-place加算 | models.py `Generator.forward()` |
+| Memory cleanup 500iter + synchronize | OOM防止・GC安定化 | lightning.py (MEMORY_CLEANUP_FREQUENCY=500) |
+| NPYスペクトログラムキャッシュ | I/O 1.8x高速化 (.pt→.npy) | dataset.py, norm_audio/__init__.py |
 
 ---
 
@@ -195,10 +198,10 @@ if spectrogram.dtype == torch.float16:
 
 | 優先度 | 最適化 | 推定効果 | 実装時間 |
 |--------|--------|---------|---------|
-| 7 | CosineAnnealingLR | 収束改善 | 10分 |
-| 8 | ResBlock改善 | 微小 | 5分 |
-| 9 | Length-aware bucketing | 30-40%削減 | 2-3時間 |
-| 10 | NPYデータ変換 | 1.8x I/O | 1時間 |
+| 7 | CosineAnnealingLR | 収束改善 | 未実装 |
+| 8 | ResBlock改善 | 微小 | ✅ 実装済み |
+| 9 | Length-aware bucketing | 30-40%削減 | 未実装 |
+| 10 | NPYデータ変換 | 1.8x I/O | ✅ 実装済み |
 | 11 | ~~MPD periods削減~~ | ~~33% D削減~~ | 非推奨 |
 | 12 | float16キャッシュ | I/O 50%削減 | 15分 |
 

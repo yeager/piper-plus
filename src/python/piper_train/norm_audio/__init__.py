@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Optional, Union
 
 import librosa
+import numpy as np
 import torch
 
 from piper_train.vits.mel_processing import spectrogram_torch
@@ -40,7 +41,7 @@ def cache_norm_audio(
     audio_cache_id = sha256(str(audio_path).encode()).hexdigest()
 
     audio_norm_path = cache_dir / f"{audio_cache_id}.pt"
-    audio_spec_path = cache_dir / f"{audio_cache_id}.spec.pt"
+    audio_spec_path = cache_dir / f"{audio_cache_id}.spec.npy"
 
     # Normalize audio
     audio_norm_tensor: torch.FloatTensor | None = None
@@ -88,6 +89,6 @@ def cache_norm_audio(
             win_size=window_length,
             center=False,
         ).squeeze(0)
-        torch.save(audio_spec_tensor, audio_spec_path)
+        np.save(audio_spec_path, audio_spec_tensor.numpy())
 
     return audio_norm_path, audio_spec_path
