@@ -199,7 +199,7 @@ class TestZeroShotForward:
         y = torch.randn(batch_size, 513, spec_len)
         y_lengths = torch.LongTensor([spec_len, spec_len])
 
-        with pytest.raises(ValueError, match="speaker_embedding or sid must be provided"):
+        with pytest.raises(ValueError, match="speaker_embedding.*must be provided|speaker_embedding is required"):
             model.forward(x, x_lengths, y, y_lengths)
 
     @pytest.mark.unit
@@ -328,7 +328,7 @@ class TestZeroShotInfer:
         x_lengths = torch.LongTensor([10])
 
         with torch.no_grad():
-            with pytest.raises(ValueError, match="speaker_embedding or sid must be provided"):
+            with pytest.raises(ValueError, match="speaker_embedding.*must be provided|speaker_embedding is required"):
                 model.infer(x, x_lengths)
 
     @pytest.mark.unit

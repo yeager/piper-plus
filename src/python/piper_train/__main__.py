@@ -6,14 +6,10 @@ import platform
 from pathlib import Path
 
 import torch
-from pytorch_lightning import Trainer
-from pytorch_lightning.callbacks import ModelCheckpoint
-from pytorch_lightning.loggers import TensorBoardLogger
-from pytorch_lightning.strategies import DDPStrategy
 
-from .vits.ema import EMACallback
-from .vits.lightning import VitsModel
 
+# RTX 6000 Ada (SM 8.9) 等の TF32 Tensor Core を活用し float32 matmul を高速化
+torch.set_float32_matmul_precision("medium")
 
 # Allow Path objects in checkpoints (PyTorch 2.6+ weights_only=True)
 torch.serialization.add_safe_globals([pathlib.PosixPath, pathlib.WindowsPath])
@@ -22,13 +18,30 @@ torch.serialization.add_safe_globals([pathlib.PosixPath, pathlib.WindowsPath])
 if platform.system() == "Windows":
     pathlib.PosixPath = pathlib.WindowsPath
 
+from pytorch_lightning import Trainer  # noqa: E402
+from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint  # noqa: E402
+from pytorch_lightning.loggers import TensorBoardLogger  # noqa: E402
+from pytorch_lightning.strategies import DDPStrategy  # noqa: E402
+
+
+# AsyncCheckpointIO for non-blocking checkpoint saves
+try:
+    from pytorch_lightning.plugins.io import AsyncCheckpointIO  # noqa: E402
+
+    ASYNC_CHECKPOINT_AVAILABLE = True
+except ImportError:
+    ASYNC_CHECKPOINT_AVAILABLE = False
+
 # Optional wandb integration
 try:
-    from pytorch_lightning.loggers import WandbLogger  # noqa: PLC0415
+    from pytorch_lightning.loggers import WandbLogger  # noqa: E402
 
     WANDB_AVAILABLE = True
 except ImportError:
     WANDB_AVAILABLE = False
+
+from .vits.ema import EMACallback  # noqa: E402
+from .vits.lightning import VitsModel  # noqa: E402
 
 
 _LOGGER = logging.getLogger(__package__)
@@ -153,6 +166,18 @@ def main():
         type=int,
         default=100000,
         help="Number of steps to freeze speaker encoder (Phase 1). Default: 100000",
+    )
+    parser.add_argument(
+        "--d-update-interval",
+        type=int,
+        default=2,
+        help="Discriminator update interval (1=every step, 2=every other step)",
+    )
+    parser.add_argument(
+        "--max-spec-length",
+        type=int,
+        default=700,
+        help="Maximum spectrogram length in frames. Utterances longer than this are filtered out.",
     )
     # WavLM Discriminator arguments (always enabled by default for improved audio quality)
     parser.add_argument(
@@ -288,11 +313,21 @@ def main():
                 every_n_epochs=args.checkpoint_epochs,
                 save_top_k=args.save_top_k,
                 save_last=True,
+                monitor="val_loss",
+                mode="min",
             )
         )
         _LOGGER.debug(
             "Checkpoints will be saved every %s epoch(s)", args.checkpoint_epochs
         )
+
+    # EarlyStopping callback
+    callbacks.append(EarlyStopping(
+        monitor="val_loss",
+        patience=20,
+        mode="min",
+        verbose=True,
+    ))
 
     # EMA is enabled by default
     if not args.no_ema:
@@ -334,6 +369,13 @@ def main():
         "default_root_dir": args.default_root_dir,
         "logger": loggers,
     }
+
+    # AsyncCheckpointIO: non-blocking checkpoint saves
+    if ASYNC_CHECKPOINT_AVAILABLE:
+        trainer_kwargs["plugins"] = [AsyncCheckpointIO()]
+        _LOGGER.info("AsyncCheckpointIO enabled for non-blocking checkpoint saves")
+    else:
+        _LOGGER.info("AsyncCheckpointIO not available, using default synchronous checkpoint IO")
 
     # Multi-GPU DDP optimization
     # Use DDPStrategy with gradient_as_bucket_view=True for memory efficiency
@@ -475,12 +517,22 @@ def main():
                         every_n_epochs=args.checkpoint_epochs,
                         save_top_k=args.save_top_k,
                         save_last=True,
+                        monitor="val_loss",
+                        mode="min",
                     )
                 )
                 _LOGGER.debug(
                     "Checkpoints will be saved every %s epoch(s)",
                     args.checkpoint_epochs,
                 )
+
+            # EarlyStopping callback
+            callbacks.append(EarlyStopping(
+                monitor="val_loss",
+                patience=20,
+                mode="min",
+                verbose=True,
+            ))
 
             # EMA is enabled by default
             if not args.no_ema:
@@ -498,6 +550,10 @@ def main():
                 "default_root_dir": args.default_root_dir,
                 "logger": loggers,
             }
+
+            # AsyncCheckpointIO: non-blocking checkpoint saves
+            if ASYNC_CHECKPOINT_AVAILABLE:
+                trainer_kwargs["plugins"] = [AsyncCheckpointIO()]
 
             # Multi-GPU DDP optimization
             strategy = configure_ddp_strategy(num_gpus, args.strategy)

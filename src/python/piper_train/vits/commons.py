@@ -45,12 +45,20 @@ def rand_gumbel_like(x):
 
 
 def slice_segments(x, ids_str, segment_size=4):
-    ret = torch.zeros_like(x[:, :, :segment_size])
-    for i in range(x.size(0)):
-        idx_str = max(0, ids_str[i])
-        idx_end = idx_str + segment_size
-        ret[i] = x[i, :, idx_str:idx_end]
-    return ret
+    # Vectorized implementation using torch.gather to avoid Python for-loop
+    # x shape: [batch, channels, time]
+    # ids_str shape: [batch]
+    ids_str = ids_str.clamp(min=0)
+    # Build index tensor: [batch, 1, segment_size] with per-batch offsets
+    # offsets[i, 0, j] = ids_str[i] + j
+    offsets = ids_str.unsqueeze(1).unsqueeze(2) + torch.arange(
+        segment_size, device=x.device
+    ).unsqueeze(0).unsqueeze(0)
+    # Expand to [batch, channels, segment_size] for gather
+    offsets = offsets.expand(-1, x.size(1), -1)
+    # Clamp to valid range to prevent out-of-bounds access
+    offsets = offsets.clamp(max=x.size(2) - 1)
+    return torch.gather(x, 2, offsets)
 
 
 def rand_slice_segments(x, x_lengths=None, segment_size=4):
@@ -96,7 +104,6 @@ def subsequent_mask(length: int):
     return mask
 
 
-@torch.jit.script
 def fused_add_tanh_sigmoid_multiply(input_a, input_b, n_channels):
     n_channels_int = n_channels[0]
     in_act = input_a + input_b

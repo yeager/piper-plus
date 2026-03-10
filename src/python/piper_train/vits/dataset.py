@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import random
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
@@ -82,6 +83,8 @@ class PiperDataset(Dataset):
         self,
         dataset_paths: list[str | Path],
         max_phoneme_ids: int | None = None,
+        max_spec_length: int | None = None,
+        filter_length: int = 1024,
     ):
         self.utterances: list[Utterance] = []
 
@@ -89,7 +92,12 @@ class PiperDataset(Dataset):
             dataset_path = Path(dataset_path)
             _LOGGER.debug("Loading dataset: %s", dataset_path)
             self.utterances.extend(
-                PiperDataset.load_dataset(dataset_path, max_phoneme_ids=max_phoneme_ids)
+                PiperDataset.load_dataset(
+                    dataset_path,
+                    max_phoneme_ids=max_phoneme_ids,
+                    max_spec_length=max_spec_length,
+                    filter_length=filter_length,
+                )
             )
 
     def __len__(self):
@@ -185,8 +193,20 @@ class PiperDataset(Dataset):
     def load_dataset(
         dataset_path: Path,
         max_phoneme_ids: int | None = None,
+        max_spec_length: int | None = None,
+        filter_length: int = 1024,
     ) -> Iterable[Utterance]:
-        num_skipped = 0
+        num_skipped_phoneme = 0
+        num_skipped_spec = 0
+
+        # Precompute spec channel count for file-size-based length estimation
+        # spec shape: [filter_length // 2 + 1, T], stored as float32 (4 bytes)
+        spec_channels = filter_length // 2 + 1
+        bytes_per_frame = spec_channels * 4
+        # PyTorch .pt files have a ~2KB header; using a conservative (small)
+        # value ensures we overestimate spec_length rather than underestimate,
+        # so borderline-long utterances are correctly filtered out.
+        spec_header_bytes = 2048
 
         dataset_dir = dataset_path.parent
 
@@ -198,12 +218,25 @@ class PiperDataset(Dataset):
 
                 try:
                     utt = PiperDataset.load_utterance(line, dataset_dir)
-                    if (max_phoneme_ids is None) or (
-                        len(utt.phoneme_ids) <= max_phoneme_ids
+                    if (max_phoneme_ids is not None) and (
+                        len(utt.phoneme_ids) > max_phoneme_ids
                     ):
-                        yield utt
-                    else:
-                        num_skipped += 1
+                        num_skipped_phoneme += 1
+                        continue
+
+                    # Filter by spectrogram length using file size estimation.
+                    # Uses os.path.getsize() (a single stat syscall) instead of
+                    # torch.load() to avoid loading every .spec.pt at init time.
+                    if max_spec_length is not None:
+                        file_size = os.path.getsize(utt.audio_spec_path)
+                        estimated_spec_length = (
+                            file_size - spec_header_bytes
+                        ) // bytes_per_frame
+                        if estimated_spec_length > max_spec_length:
+                            num_skipped_spec += 1
+                            continue
+
+                    yield utt
                 except Exception:
                     _LOGGER.exception(
                         "Error on line %s of %s: %s",
@@ -212,8 +245,16 @@ class PiperDataset(Dataset):
                         line,
                     )
 
-        if num_skipped > 0:
-            _LOGGER.warning("Skipped %s utterance(s)", num_skipped)
+        if num_skipped_phoneme > 0:
+            _LOGGER.warning(
+                "Skipped %s utterance(s) exceeding max_phoneme_ids", num_skipped_phoneme
+            )
+        if num_skipped_spec > 0:
+            _LOGGER.warning(
+                "Filtered %s utterance(s) exceeding max_spec_length=%s",
+                num_skipped_spec,
+                max_spec_length,
+            )
 
     @staticmethod
     def load_utterance(line: str, dataset_dir: Path | None = None) -> Utterance:

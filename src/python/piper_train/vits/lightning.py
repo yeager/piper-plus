@@ -18,7 +18,7 @@ from .models import MultiPeriodDiscriminator, SynthesizerTrn, WavLMDiscriminator
 _LOGGER = logging.getLogger("vits.lightning")
 
 # Memory cleanup frequency (iterations)
-MEMORY_CLEANUP_FREQUENCY = 100
+MEMORY_CLEANUP_FREQUENCY = 1000
 
 
 class VitsModel(pl.LightningModule):
@@ -89,6 +89,9 @@ class VitsModel(pl.LightningModule):
         use_wavlm_discriminator: bool = True,
         wavlm_model_name: str = "microsoft/wavlm-base-plus",
         c_wavlm: float = 0.5,
+        # Training loop optimization
+        d_update_interval: int = 2,
+        max_spec_length: int = 700,
         **kwargs,
     ):
         super().__init__()
@@ -101,6 +104,17 @@ class VitsModel(pl.LightningModule):
             gin_channels = 512
 
         self.save_hyperparameters()
+
+        # Discriminator update interval (D:G = 1:d_update_interval)
+        self.d_update_interval = self.hparams.get("d_update_interval", 2)
+
+        # Cache for discriminator real-side outputs (shared between G and D steps)
+        # These are set in training_step_g and reused in training_step_d to avoid
+        # redundant forward passes on real audio through the discriminator.
+        self._cached_y_d_hat_r: list | None = None
+        self._cached_fmap_r: list | None = None
+        self._cached_y_d_hat_r_wlm: list | None = None
+        self._cached_fmap_r_wlm: list | None = None
 
         # DINO center buffer for zero-shot training
         if use_zero_shot:
@@ -150,25 +164,86 @@ class VitsModel(pl.LightningModule):
         self._train_dataset: Dataset | None = None
         self._val_dataset: Dataset | None = None
         self._test_dataset: Dataset | None = None
-        self._load_datasets(validation_split, num_test_examples, max_phoneme_ids)
+        self._load_datasets(
+            validation_split,
+            num_test_examples,
+            max_phoneme_ids,
+            max_spec_length,
+        )
 
         # State kept between training optimizers
         self._y = None
         self._y_hat = None
+
+        # Track whether torch.compile has been applied
+        self._compiled = False
+
+    def setup(self, stage=None):
+        """Apply torch.compile after model is placed on the correct device.
+
+        Compiles the Generator decoder (HiFi-GAN) and the MultiPeriodDiscriminator
+        for training speedup on PyTorch 2.x. Falls back to eager mode gracefully
+        if torch.compile is unavailable or fails.
+        """
+        if self._compiled:
+            return
+
+        if not hasattr(torch, "compile"):
+            _LOGGER.info(
+                "torch.compile not available (PyTorch < 2.0), using eager mode"
+            )
+            self._compiled = True
+            return
+
+        # Compile Generator decoder (HiFi-GAN) — the most compute-intensive part
+        try:
+            self.model_g.dec = torch.compile(
+                self.model_g.dec, mode="reduce-overhead"
+            )
+            _LOGGER.info(
+                "torch.compile applied to Generator decoder (mode=reduce-overhead)"
+            )
+        except Exception as e:
+            _LOGGER.warning(
+                "torch.compile failed for Generator decoder, using eager mode: %s", e
+            )
+
+        # Compile MultiPeriodDiscriminator
+        try:
+            self.model_d = torch.compile(
+                self.model_d, mode="reduce-overhead"
+            )
+            _LOGGER.info(
+                "torch.compile applied to MultiPeriodDiscriminator "
+                "(mode=reduce-overhead)"
+            )
+        except Exception as e:
+            _LOGGER.warning(
+                "torch.compile failed for MultiPeriodDiscriminator, "
+                "using eager mode: %s",
+                e,
+            )
+
+        self._compiled = True
 
     def _load_datasets(
         self,
         validation_split: float,
         num_test_examples: int,
         max_phoneme_ids: int | None = None,
+        max_spec_length: int | None = None,
     ):
         if self.hparams.dataset is None:
             _LOGGER.debug("No dataset to load")
             return
 
         full_dataset = PiperDataset(
-            self.hparams.dataset, max_phoneme_ids=max_phoneme_ids
+            self.hparams.dataset,
+            max_phoneme_ids=max_phoneme_ids,
+            max_spec_length=max_spec_length,
+            filter_length=self.hparams.filter_length,
         )
+
         valid_set_size = int(len(full_dataset) * validation_split)
         train_set_size = len(full_dataset) - valid_set_size - num_test_examples
 
@@ -210,6 +285,29 @@ class VitsModel(pl.LightningModule):
             self._train_batch_sampler.set_epoch(self.current_epoch)
             _LOGGER.debug(
                 "Set SpeakerBalancedBatchSampler epoch to %d", self.current_epoch
+            )
+
+    def on_train_epoch_end(self):
+        """Epoch終了時にLR schedulerをステップする。
+
+        automatic_optimization=False のため、ExponentialLR は自動でステップ
+        されない。手動でepoch単位のdecayを適用する。
+        """
+        schedulers = self.lr_schedulers()
+        if schedulers is not None:
+            if isinstance(schedulers, list | tuple):
+                for sch in schedulers:
+                    sch.step()
+            else:
+                schedulers.step()
+
+            # Log current learning rates
+            opt_g, opt_d = self.optimizers()
+            _LOGGER.info(
+                "Epoch %d LR stepped: G=%.2e, D=%.2e",
+                self.current_epoch,
+                opt_g.param_groups[0]["lr"],
+                opt_d.param_groups[0]["lr"],
             )
 
     def train_dataloader(self):
@@ -294,29 +392,43 @@ class VitsModel(pl.LightningModule):
         # Manual optimization for multiple optimizers
         opt_g, opt_d = self.optimizers()
 
-        # Train generator
+        # Train generator (every step)
         opt_g.zero_grad()
         loss_g = self.training_step_g(batch)
         self.manual_backward(loss_g)
         opt_g.step()
 
-        # Train discriminator
-        opt_d.zero_grad()
-        loss_d = self.training_step_d(batch)
-        self.manual_backward(loss_d)
-        opt_d.step()
+        # Train discriminator (every d_update_interval steps)
+        if self.global_step % self.d_update_interval == 0:
+            opt_d.zero_grad()
+            loss_d = self.training_step_d(batch)
+            self.manual_backward(loss_d)
+            opt_d.step()
+        else:
+            _LOGGER.debug(
+                "Skipping D update at global_step=%d (interval=%d)",
+                self.global_step,
+                self.d_update_interval,
+            )
 
-        # Periodic memory cleanup to prevent fragmentation
+        # Clear discriminator output cache after both G and D steps
+        self._cached_y_d_hat_r = None
+        self._cached_fmap_r = None
+        self._cached_y_d_hat_r_wlm = None
+        self._cached_fmap_r_wlm = None
+
+        # Periodic memory cleanup (infrequent — GPU utilization is stable)
         if batch_idx % MEMORY_CLEANUP_FREQUENCY == 0:
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-                # Use info level only for first cleanup, then debug
                 if batch_idx == 0:
                     _LOGGER.info(
-                        f"Memory cache clearing enabled every {MEMORY_CLEANUP_FREQUENCY} iterations"
+                        "D:G ratio = 1:%d | Memory cache clearing every %d iterations",
+                        self.d_update_interval,
+                        MEMORY_CLEANUP_FREQUENCY,
                     )
                 else:
-                    _LOGGER.debug(f"Memory cache cleared at iteration {batch_idx}")
+                    _LOGGER.debug("Memory cache cleared at iteration %d", batch_idx)
 
     def _log_with_batch_info(
         self, key: str, value, batch: Batch = None, batch_size: int = None
@@ -400,7 +512,17 @@ class VitsModel(pl.LightningModule):
         # Save for training_step_d
         self._y = y
 
-        _y_d_hat_r, y_d_hat_g, fmap_r, fmap_g = self.model_d(y, y_hat)
+        y_d_hat_r, y_d_hat_g, fmap_r, fmap_g = self.model_d(y, y_hat)
+
+        # Cache real-side discriminator outputs for reuse in training_step_d.
+        # D parameters are not updated between G and D steps within the same
+        # training_step, so the real-side outputs are identical and safe to reuse.
+        # NOTE: Currently MPD.forward() computes real and fake together, so both
+        # sides are computed here. To fully eliminate redundant real-side computation,
+        # MPD/WavLMDiscriminator need a forward_single(x) method that processes
+        # only one input. That refactor is tracked separately.
+        self._cached_y_d_hat_r = [t.detach() for t in y_d_hat_r]
+        self._cached_fmap_r = [[t.detach() for t in fm] for fm in fmap_r]
 
         with autocast(self.device.type, enabled=False):
             # Generator loss
@@ -415,9 +537,16 @@ class VitsModel(pl.LightningModule):
 
             # WavLM Discriminator loss (optional)
             if self.model_d_wavlm is not None:
-                _y_d_hat_r_wlm, y_d_hat_g_wlm, fmap_r_wlm, fmap_g_wlm = (
+                y_d_hat_r_wlm, y_d_hat_g_wlm, fmap_r_wlm, fmap_g_wlm = (
                     self.model_d_wavlm(y, y_hat)
                 )
+
+                # Cache WavLM real-side outputs
+                self._cached_y_d_hat_r_wlm = [t.detach() for t in y_d_hat_r_wlm]
+                self._cached_fmap_r_wlm = [
+                    [t.detach() for t in fm] for fm in fmap_r_wlm
+                ]
+
                 loss_fm_wavlm = feature_loss(fmap_r_wlm, fmap_g_wlm)
                 loss_gen_wavlm, _ = generator_loss(y_d_hat_g_wlm)
                 loss_wavlm = (loss_gen_wavlm + loss_fm_wavlm) * self.hparams.c_wavlm
@@ -437,7 +566,20 @@ class VitsModel(pl.LightningModule):
         y_hat = self._y_hat
         # Ensure detached tensors are contiguous
         y_hat_detached = y_hat.detach().contiguous()
-        y_d_hat_r, y_d_hat_g, _, _ = self.model_d(y, y_hat_detached)
+
+        # Reuse cached real-side outputs from training_step_g when available.
+        # D parameters have not changed since G step, so real-side outputs are
+        # identical. We still need the fake-side recomputed with detached y_hat.
+        # NOTE: Until MPD exposes a forward_single() method, we must call the
+        # full forward and discard the redundant real-side outputs. The cached
+        # values are used for the discriminator loss to maintain consistency.
+        if self._cached_y_d_hat_r is not None:
+            # Full forward still needed for fake-side (y_hat is detached now)
+            _, y_d_hat_g, _, _ = self.model_d(y, y_hat_detached)
+            y_d_hat_r = self._cached_y_d_hat_r
+        else:
+            # Fallback: no cache (e.g., called from validation_step)
+            y_d_hat_r, y_d_hat_g, _, _ = self.model_d(y, y_hat_detached)
 
         with autocast(self.device.type, enabled=False):
             # Discriminator
@@ -448,9 +590,15 @@ class VitsModel(pl.LightningModule):
 
             # WavLM Discriminator loss (optional)
             if self.model_d_wavlm is not None:
-                y_d_hat_r_wlm, y_d_hat_g_wlm, _, _ = self.model_d_wavlm(
-                    y, y_hat_detached
-                )
+                if self._cached_y_d_hat_r_wlm is not None:
+                    _, y_d_hat_g_wlm, _, _ = self.model_d_wavlm(
+                        y, y_hat_detached
+                    )
+                    y_d_hat_r_wlm = self._cached_y_d_hat_r_wlm
+                else:
+                    y_d_hat_r_wlm, y_d_hat_g_wlm, _, _ = self.model_d_wavlm(
+                        y, y_hat_detached
+                    )
                 loss_disc_wavlm, _, _ = discriminator_loss(y_d_hat_r_wlm, y_d_hat_g_wlm)
                 loss_disc_all = loss_disc_all + loss_disc_wavlm * self.hparams.c_wavlm
 
@@ -557,5 +705,11 @@ class VitsModel(pl.LightningModule):
             type=int,
             default=min(16, os.cpu_count()),
             help="Number of workers for DataLoader",
+        )
+        parser.add_argument(
+            "--d-update-interval",
+            type=int,
+            default=2,
+            help="Discriminator update interval (D:G = 1:N). Default: 2",
         )
         return parent_parser
