@@ -226,6 +226,14 @@ def main():
         "--max_epochs", type=int, default=1000, help="Maximum number of epochs"
     )
     parser.add_argument(
+        "--val-every-n-epochs", type=int, default=5,
+        help="Run validation every N epochs",
+    )
+    parser.add_argument(
+        "--limit-val-batches", type=int, default=50,
+        help="Maximum number of validation batches",
+    )
+    parser.add_argument(
         "--default_root_dir", default=None, help="Default path for logs and weights"
     )
     parser.add_argument(
@@ -365,6 +373,8 @@ def main():
         "devices": args.devices,
         "precision": args.precision,
         "max_epochs": args.max_epochs,
+        "check_val_every_n_epoch": args.val_every_n_epochs,
+        "limit_val_batches": args.limit_val_batches,
         "callbacks": callbacks,
         "default_root_dir": args.default_root_dir,
         "logger": loggers,
@@ -546,6 +556,8 @@ def main():
                 "devices": args.devices,
                 "precision": args.precision,
                 "max_epochs": args.max_epochs,
+                "check_val_every_n_epoch": args.val_every_n_epochs,
+                "limit_val_batches": args.limit_val_batches,
                 "callbacks": callbacks,
                 "default_root_dir": args.default_root_dir,
                 "logger": loggers,

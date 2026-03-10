@@ -342,6 +342,7 @@ class VitsModel(pl.LightningModule):
                 num_workers=self.hparams.num_workers,
                 pin_memory=pin_memory,
                 persistent_workers=(True if self.hparams.num_workers > 0 else False),
+                prefetch_factor=(2 if self.hparams.num_workers > 0 else None),
             )
         else:
             # 従来の動作（ランダムサンプリング）
@@ -355,6 +356,7 @@ class VitsModel(pl.LightningModule):
                 persistent_workers=(
                     True if self.hparams.num_workers > 0 else False
                 ),  # Multi-GPU optimization
+                prefetch_factor=(2 if self.hparams.num_workers > 0 else None),
             )
 
     def val_dataloader(self):
@@ -373,6 +375,7 @@ class VitsModel(pl.LightningModule):
             persistent_workers=(
                 True if self.hparams.num_workers > 0 else False
             ),  # Multi-GPU optimization
+            prefetch_factor=(2 if self.hparams.num_workers > 0 else None),
         )
 
     def test_dataloader(self):
@@ -652,12 +655,14 @@ class VitsModel(pl.LightningModule):
                 lr=self.hparams.learning_rate,
                 betas=self.hparams.betas,
                 eps=self.hparams.eps,
+                fused=torch.cuda.is_available(),
             ),
             torch.optim.AdamW(
                 d_params,
                 lr=self.hparams.learning_rate,
                 betas=self.hparams.betas,
                 eps=self.hparams.eps,
+                fused=torch.cuda.is_available(),
             ),
         ]
         schedulers = [
