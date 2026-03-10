@@ -4,107 +4,65 @@ Piper TTSは高品質なニューラルテキスト音声合成システムで�
 
 ---
 
-## 🟡 現在の状態: WavLM Discriminator学習中（再開待ち） / C++/Python同期完了
+## 🟡 現在の状態: Zero-Shot TTS 事前学習準備中
 
-**ブランチ**: `dev`
+**ブランチ**: `feat/zero-shot-tts`
 
-### 学習状況 (2026-01-11 更新)
+### 概要 (2026-03-10 更新)
 
 | 項目 | 値 |
 |------|-----|
-| エポック | **150** / 200 (75%) |
-| データセット | `dataset-moe-speech-20speakers-v2` |
-| 発話数 | 60,164 |
+| データセット | `dataset-moe-speech-20speakers`（speaker embedding付き） |
 | 話者数 | 20 |
-| 新機能 | WavLM Discriminator (デフォルト有効) |
-| 残りエポック | 50 |
-| 残り時間 | 約22時間 |
-| WandB | https://wandb.ai/yousan/piper-tts/runs/0eftq9nt |
+| Speaker Encoder | CAM++ (192次元, ONNX, Apache-2.0) |
+| アーキテクチャ | Dual-Mode Speaker Conditioning (emb_g + spk_proj) |
+| gin_channels | 512 |
 
-### 中間評価結果 (150 epoch時点)
-
-- **音割れ（クリッピング）発生**: WavLM Discriminatorにより高振幅音声が生成される傾向
-- v2モデル（WavLMなし）では発生しない
-
-### 音割れ解決プラン
-
-| 優先度 | オプション | 内容 | 所要時間 |
-|-------|-----------|------|---------|
-| 1 | **A: 学習継続** | 200epochまで学習継続して改善を確認 | 約22時間 |
-| 2 | B: c_wavlm調整 | c_wavlmを下げて再学習（0.5→0.2） | 約90時間 |
-
-**現在のプラン**: まずAを試し、改善しない場合はBを実行
-
-**オプションBの学習コマンド** (必要な場合):
-```bash
-NCCL_DEBUG=WARN NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1 \
-uv run python -m piper_train \
-  --dataset-dir /data/piper/dataset-moe-speech-20speakers-v2 \
-  --prosody-dim 16 \
-  --accelerator gpu --devices 4 --precision 16-mixed \
-  --max_epochs 200 --batch-size 12 --samples-per-speaker 2 \
-  --checkpoint-epochs 1 --quality medium \
-  --base_lr 2e-4 --disable_auto_lr_scaling \
-  --ema-decay 0.9995 --num-workers 0 --no-pin-memory \
-  --c-wavlm 0.2 \
-  --default_root_dir /data/piper/output-moe-speech-20speakers-wavlm-c02
-```
-
-### 学習再開コマンド
+### CAM++ ONNXモデルのダウンロード
 
 ```bash
-NCCL_DEBUG=WARN NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1 \
-uv run python -m piper_train \
-  --dataset-dir /data/piper/dataset-moe-speech-20speakers-v2 \
-  --prosody-dim 16 \
-  --accelerator gpu --devices 4 --precision 16-mixed \
-  --max_epochs 200 --batch-size 12 --samples-per-speaker 2 \
-  --checkpoint-epochs 1 --quality medium \
-  --base_lr 2e-4 --disable_auto_lr_scaling \
-  --ema-decay 0.9995 --num-workers 0 --no-pin-memory \
-  --default_root_dir /data/piper/output-moe-speech-20speakers-wavlm \
-  --resume_from_checkpoint /data/piper/output-moe-speech-20speakers-wavlm/lightning_logs/version_2/checkpoints/last.ckpt
+# HuggingFace CosyVoice-300M リポジトリから取得 (27MB, Apache-2.0)
+mkdir -p /home/shadeform/data/piper/models
+wget -q "https://huggingface.co/model-scope/CosyVoice-300M/resolve/main/campplus.onnx" \
+  -O /home/shadeform/data/piper/models/campplus.onnx
 ```
 
-### 学習中モデル
+**モデル仕様:**
+| 項目 | 値 |
+|------|-----|
+| 入力 | Fbank `[batch, T, 80]` (16kHz, 80-dim) |
+| 出力 | Speaker Embedding `[batch, 192]` (L2正規化済み) |
+| サイズ | 27MB |
+| ライセンス | Apache-2.0 |
+| 出典 | 3D-Speaker / ModelScope CAM++ |
 
-```
-/data/piper/output-moe-speech-20speakers-wavlm/
-├── lightning_logs/version_2/checkpoints/
-│   ├── epoch=149-step=257700.ckpt  ← 最新
-│   └── last.ckpt  ← リジューム用
-├── moe-speech-20speakers-wavlm-150epoch.onnx  ← 中間テスト用
-└── (学習完了後に最終ONNX変換予定)
-```
+### Speaker Embedding前処理
 
-### 学習完了後の手順
-
-1. **ONNX変換**（WavLMモデルは `--stochastic` 必須）
 ```bash
-CUDA_VISIBLE_DEVICES="" uv run python -m piper_train.export_onnx \
-  --stochastic \
-  /data/piper/output-moe-speech-20speakers-wavlm/lightning_logs/version_2/checkpoints/last.ckpt \
-  /data/piper/output-moe-speech-20speakers-wavlm/moe-speech-20speakers-wavlm-200epoch.onnx
+# Step 1: Per-utterance embedding抽出（学習用・推奨）
+# 各発話の音声から個別にembeddingを生成し、dataset.jsonlを自動更新
+uv run python -m piper_train.extract_speaker_embedding \
+  --encoder /home/shadeform/data/piper/models/campplus.onnx \
+  --dataset-dir /home/shadeform/data/piper/dataset-moe-speech-20speakers \
+  --per-utterance
+
+# Step 2: Per-speaker embedding抽出（推論用reference）
+# 話者ごとに複数発話の平均embeddingを生成
+uv run python -m piper_train.extract_speaker_embedding \
+  --encoder /home/shadeform/data/piper/models/campplus.onnx \
+  --dataset-dir /home/shadeform/data/piper/dataset-moe-speech-20speakers \
+  --output-dir /path/to/embeddings
 ```
 
-2. **推論テスト**（WavLMモデルは `--noise-scale 0.5` 推奨）
-```bash
-CUDA_VISIBLE_DEVICES="" uv run python -m piper_train.infer_onnx \
-  --model /data/piper/output-moe-speech-20speakers-wavlm/moe-speech-20speakers-wavlm-200epoch.onnx \
-  --config /data/piper/dataset-moe-speech-20speakers-v2/config.json \
-  --output-dir /home/jovyan \
-  --text "こんにちは、今日は良い天気ですね。" \
-  --speaker-id 0 --noise-scale 0.5
-```
-
-3. **音割れ確認** - v2モデルと比較して改善されているか確認
-   - 改善された場合: WavLMモデルを本番採用
-   - 改善しない場合: オプションBを実行（c_wavlm=0.2で再学習）
+**Per-utterance vs Per-speaker:**
+- 学習にはper-utterance推奨（推論時の条件と一致、zero-shot精度向上）
+- per-utteranceは `dataset.jsonl` に `speaker_embedding_path` を自動追加
+- 出力: 各発話ごとに `speaker_embeddings/{hash}.npy` (192次元, 896バイト)
 
 ### 完了済みモデル
 
 ```
-/data/piper/output-moe-speech-20speakers-v2/
+/home/shadeform/data/piper/output-moe-speech-20speakers-v2/
 ├── lightning_logs/version_0/checkpoints/
 │   ├── epoch=199-step=206000.ckpt
 │   └── last.ckpt
@@ -113,22 +71,23 @@ CUDA_VISIBLE_DEVICES="" uv run python -m piper_train.infer_onnx \
 
 ### 推論テスト
 
-**方法1: テキスト直接入力（推奨）**
 ```bash
 CUDA_VISIBLE_DEVICES="" uv run python -m piper_train.infer_onnx \
-  --model /data/piper/output-moe-speech-20speakers-v2/moe-speech-20speakers-v2.onnx \
-  --config /data/piper/dataset-moe-speech-20speakers-v2/config.json \
+  --model /home/shadeform/data/piper/output-moe-speech-20speakers-v2/moe-speech-20speakers-v2.onnx \
+  --config /home/shadeform/data/piper/dataset-moe-speech-20speakers-v2/config.json \
   --output-dir /path/to/output \
   --text "こんにちは、今日は良い天気ですね。" \
   --speaker-id 0
 ```
 
-**方法2: JSONL入力**
-```bash
-cat test.jsonl | CUDA_VISIBLE_DEVICES="" uv run python -m piper_train.infer_onnx \
-  --model /data/piper/output-moe-speech-20speakers-v2/moe-speech-20speakers-v2.onnx \
-  --output-dir /path/to/output
-```
+<details>
+<summary>WavLM学習情報（アーカイブ）</summary>
+
+WavLM Discriminator学習は150/200 epochで中断。音割れ（クリッピング）が発生していた。
+- WandB: https://wandb.ai/yousan/piper-tts/runs/0eftq9nt
+- チェックポイント: `/home/shadeform/data/piper/output-moe-speech-20speakers-wavlm/`
+
+</details>
 
 ---
 
@@ -155,7 +114,24 @@ C++/Python CLIにモデル管理・テキスト直接入力機能を追加。Win
 - `src/python_run/piper/download.py` — Python モデルダウンロード
 - `scripts/speak.bat`, `scripts/speak.ps1` — Windows ヘルパー
 
-### Phonemizer ABC + 言語レジストリ ✅ NEW (2026-02-01)
+### Zero-Shot TTS (Dual-Mode Speaker Conditioning) ✅ NEW (2026-03-10)
+
+マルチスピーカーモデルでデフォルト有効（フラグ不要）。`emb_g` (nn.Embedding) と `spk_proj` (nn.Linear) が同一モデルに共存し、speaker ID指定とspeaker embedding指定の両方で推論可能。
+
+**特徴:**
+- ONNX変換時に `--export-mode {auto, zero-shot, sid}` で推論モードを分離
+- gin_channels=512（768ではガビガビ音発生）
+- Speaker Encoder: CAM++ ONNX (27MB, 192次元, Apache-2.0)
+- Per-utterance embedding抽出で学習-推論条件を一致
+
+**実装ファイル:**
+- `src/python/piper_train/vits/models.py` — Dual-mode SynthesizerTrn
+- `src/python/piper_train/vits/lightning.py` — use_zero_shot デフォルト有効
+- `src/python/piper_train/export_onnx.py` — `--export-mode` フラグ
+- `src/python/piper_train/extract_speaker_embedding.py` — CAM++ embedding抽出
+- `src/python/piper_train/prepare_zero_shot_dataset.py` — 複数コーパス統合
+
+### Phonemizer ABC + 言語レジストリ ✅ (2026-02-01)
 
 `Phonemizer` 抽象基底クラスと言語レジストリにより、if/elif分岐を解消。新言語追加が容易に。
 
@@ -171,124 +147,34 @@ C++/Python CLIにモデル管理・テキスト直接入力機能を追加。Win
 - `src/python/piper_train/phonemize/english.py` — `EnglishPhonemizer`
 - `src/python/tests/test_phonemizer_registry.py` — レジストリ・ABCテスト
 
-**変更点:**
-- `ProsodyInfo` を `base.py` に統一 (日本語/英語共通)
-- `EnglishProsodyInfo` は `ProsodyInfo` のエイリアス (後方互換)
-- `infer_onnx.py` の言語分岐をレジストリ経由に変更
-- BOS/EOS/パディング処理を `EnglishPhonemizer.post_process_ids()` に移動
-
-### GPL-free 英語G2P (g2p-en) ✅ NEW (2026-01-31)
+### GPL-free 英語G2P (g2p-en) ✅ (2026-01-31)
 
 g2p-en (Apache-2.0) を使用したespeak-ng互換の英語音素化。espeak-ng/piper-phonemize (GPL) なしで英語推論が可能。
-
-**espeak-ng互換の処理:**
-- ストレスマーカー (`ˈ`/`ˌ`) を母音の前に挿入
-- 単語間スペース挿入、句読点は前の単語に付着
-- 機能語 (are, you, the等) のストレス除去
-- AA+R → ɑːɹ、ER0 → ɚ、ER1 → ɜː の文脈依存変換
-- BOS (`^`) / EOS (`$`) + phoneme間パディング (`_`=ID 0)
 
 **実装ファイル:**
 - `src/python/piper_train/phonemize/english.py` — G2P変換
 - `src/python/piper_train/infer_onnx.py` — BOS/EOS・パディング挿入
 - `src/python/tests/test_english_phonemizer.py` — 42テスト
 
-**推論コマンド:**
-```bash
-CUDA_VISIBLE_DEVICES="" uv run python -m piper_train.infer_onnx \
-  --model /path/to/en_model.onnx \
-  --config /path/to/en_model.onnx.json \
-  --output-dir /path/to/output \
-  --text "Hello, how are you today?" \
-  --language en
-```
+### WavLM Discriminator ✅ (2026-01-08)
 
-**espeak-ngとの完全一致:**
-hello, the cat, car, information, bird（検証済み）
-
-**既知の差異（G2Pエンジン由来）:**
-- 疑問詞 (how) のストレス種類: g2p-en=ˈ vs espeak-ng=ˌ
-- フラッピング: g2p-en=t vs espeak-ng=ɾ (letter等)
-- 縮約形: g2p-en=分離 vs espeak-ng=結合 (I am等)
-
-### WavLM Discriminator ✅ NEW (2026-01-08)
-
-Microsoft WavLMベースの知覚品質判別器。音質向上のためデフォルトで有効。
-
-**期待効果:**
-- MOS向上: +0.15-0.25
-- 推論速度への影響: なし（学習時のみ使用）
+Microsoft WavLMベースの知覚品質判別器。`--no-wavlm` で無効化可能。
 
 **実装ファイル:**
 - `src/python/piper_train/vits/models.py` - `WavLMDiscriminator`クラス
 - `src/python/piper_train/vits/lightning.py` - 学習ループ統合
 
-**注意:**
-- WavLMは学習時のみ使用（推論グラフには含まれない）
-- FP16 Mixed Precision対応済み（内部でfloat32変換）
-- GPUメモリ追加: 約1-2GB/GPU
+### テキスト直接入力推論 ✅ (2026-01-08)
 
-### テキスト直接入力推論 ✅ NEW (2026-01-08)
-
-`infer_onnx.py`に`--text`オプション追加。JSONLなしで日本語テキストから直接音声生成。
-
-**使用方法:**
-```bash
-CUDA_VISIBLE_DEVICES="" uv run python -m piper_train.infer_onnx \
-  --model /path/to/model.onnx \
-  --config /path/to/config.json \
-  --output-dir /path/to/output \
-  --text "こんにちは" \
-  --speaker-id 0
-```
-
-**追加引数:**
-| 引数 | 説明 |
-|------|------|
-| `--text` | 日本語テキスト入力 |
-| `--config` | config.jsonパス（phoneme_id_map必須） |
-| `--speaker-id` | 話者ID（デフォルト: 0） |
+`infer_onnx.py`に`--text`オプション追加。JSONLなしでテキストから直接音声生成。
 
 ### Issue #204: 疑問詞マーカーの拡張 ✅
 
-日本語の疑問文の種類を区別するための新しいマーカーを追加。
+日本語の疑問文の種類を区別するマーカー (`?!`, `?.`, `?~`)。
 
-| マーカー | Unicode | 用途 | 例 |
-|----------|---------|------|-----|
-| `?!` | 0xE016 | 強調疑問 | 本当?! 本当！？ |
-| `?.` | 0xE017 | 平叙疑問 | そうなの?. |
-| `?~` | 0xE018 | 確認疑問 | 行くよね?~ |
+### Issue #207: 文脈依存「ん」(N) バリアント ✅
 
-**実装ファイル:**
-- `src/python/piper_train/phonemize/japanese.py` - `_get_question_type()` 関数
-
-### Issue #207: 文脈依存「ん」(N) バリアント ✅ NEW
-
-「ん」の発音が後続音によって変わることを反映。
-
-| バリアント | Unicode | 条件 | 例 |
-|-----------|---------|------|-----|
-| `N_m` | 0xE019 | m/b/p の前（両唇音同化）| さんぽ |
-| `N_n` | 0xE01A | n/t/d/ts/ch の前（歯茎音同化）| あんない |
-| `N_ng` | 0xE01B | k/g の前（軟口蓋音同化）| ぎんこう |
-| `N_uvular` | 0xE01C | 語末/母音の前（口蓋垂音）| ほん |
-
-**実装ファイル:**
-- `src/python/piper_train/phonemize/japanese.py` - `_apply_n_phoneme_rules()` 関数
-- `src/python/piper_train/phonemize/jp_id_map.py` - 新トークン定義
-- `src/python/piper_train/phonemize/token_mapper.py` - PUAマッピング
-
-**音素変換例:**
-```
-さんぽ → s a N_m p o     (N → N_m: pの前)
-あんない → a N_n n a i   (N → N_n: nの前)
-ぎんこう → g i N_ng k o o (N → N_ng: kの前)
-ほん → h o N_uvular      (N → N_uvular: 語末)
-```
-
-**期待効果:**
-- MOS向上: +0.04-0.08
-- 推論速度への影響: なし（前処理のみ）
+「ん」の発音が後続音によって変わることを反映 (`N_m`, `N_n`, `N_ng`, `N_uvular`)。
 
 ### prosody_features (A1/A2/A3) モデル統合 ✅
 
@@ -302,34 +188,21 @@ OpenJTalkから抽出されるA1/A2/A3値をDuration Predictorの入力として
 | A2 | アクセント句内のモーラ位置 | 1, 2, 3, ... |
 | A3 | アクセント句内の総モーラ数 | 1-10+ |
 
-**使用方法:**
-```bash
-# 学習時
-uv run python -m piper_train --prosody-dim 16 ...
-
-# 前処理時（prosody_features 付きデータセット作成）
-uv run python -m piper_train.tools.add_prosody_features --input-dataset ... --output-dir ...
-```
-
-**デフォルト有効:** prosodyはデフォルトで有効（`--prosody-dim 16`）
+**デフォルト有効:** `--prosody-dim 16`
 
 ### SpeakerBalancedBatchSampler ✅
 
 マルチスピーカーモデルのDuration Predictor崩壊問題を解決するカスタムバッチサンプラー。
 
-```bash
---batch-size 32 --samples-per-speaker 4  # 8話者 × 4サンプル = 32
-```
-
 ### FP16 Mixed Precision ✅
 
-デフォルトで有効（`--precision 16-mixed`）。学習速度2-3倍向上、GPUメモリ約50%削減。
+デフォルトで有効。学習速度2-3倍向上、GPUメモリ約50%削減。
 
 ---
 
 ## 学習設定
 
-### 推奨設定 (20話者、RTX 6000 Ada 48GB × 1、WavLM有効)
+### 推奨設定 (20話者、RTX 6000 Ada 48GB × 1、事前学習用)
 
 ```bash
 uv run python -m piper_train \
@@ -338,41 +211,36 @@ uv run python -m piper_train \
   --accelerator gpu --devices 1 \
   --precision bf16-mixed \
   --max_epochs 200 \
-  --batch-size 32 \
-  --samples-per-speaker 4 \
+  --batch-size 160 \
+  --samples-per-speaker 8 \
   --checkpoint-epochs 2 \
   --quality medium \
   --base_lr 2e-4 \
   --ema-decay 0.9995 \
   --num-workers 8 \
+  --no-wavlm \
   --default_root_dir /home/shadeform/data/piper/output-moe-speech-20speakers
 ```
+
+注: `--zero-shot` フラグは不要（マルチスピーカーなら自動有効化）
 
 ### V100 → RTX 6000 Ada 移行時の変更点
 
 | パラメータ | V100 (16GB × 4) | RTX 6000 Ada (48GB × 1) | 理由 |
 |---|---|---|---|
 | `--devices` | 4 | **1** | シングルGPU |
-| `--precision` | `16-mixed` | **`bf16-mixed`** | Ada LoveaceはBF16ネイティブ対応、FP16より数値安定 |
-| `--batch-size` | 12 | **32** | 48GB VRAMで大幅増加可能（推定使用量 35-40GB） |
-| `--samples-per-speaker` | 2 | **4** | メモリ余裕でDuration Predictor安定化 |
+| `--precision` | `16-mixed` | **`bf16-mixed`** | Ada LovelaceはBF16ネイティブ対応 |
+| `--batch-size` | 12 | **160** | 48GB VRAMで大幅増加可能 |
+| `--samples-per-speaker` | 2 | **8** | メモリ余裕でDuration Predictor安定化 |
 | `--num-workers` | 0 | **8** | シングルGPU＋12コアCPUで効率化 |
-| `--no-pin-memory` | あり | **削除** | シングルGPUではpin_memory=Trueが高速 |
-| `--disable_auto_lr_scaling` | あり | **削除** | シングルGPUでは自動スケーリング不発動 |
-| `--checkpoint-epochs` | 1 | **2** | 学習高速化によりストレージ節約 |
-| NCCL環境変数 | 必須 | **不要** | マルチGPU通信不要 |
 
-### GPU環境別の特性
+### 話者数別の推奨設定
 
-| 項目 | V100 (Volta) | RTX 6000 Ada (Ada Lovelace) |
-|---|---|---|
-| VRAM | 16GB | 48GB |
-| Tensor Core | 1st Gen | 4th Gen |
-| BF16 | 非対応 | ネイティブ対応 |
-| TF32 | 非対応 | デフォルト有効 |
-| Compute Capability | 7.0 | 8.9 |
-
-### 旧設定 (20話者、L4/V100 GPU 16GB × 4、WavLM有効)
+| 話者数 | batch_size | samples_per_speaker | 実効バッチ | 備考 |
+|-------|------------|---------------------|-----------|------|
+| 5話者 | 20 | 4 | 20 | ✅ 検証済み |
+| **20話者** | **160** | **8** | **160** | RTX 6000 Ada推奨 |
+| 20話者 (旧) | 32 | 4 | 32 | WavLMあり |
 
 <details>
 <summary>V100/L4マルチGPU向け設定（参考）</summary>
@@ -380,32 +248,17 @@ uv run python -m piper_train \
 ```bash
 NCCL_DEBUG=WARN NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1 \
 uv run python -m piper_train \
-  --dataset-dir /data/piper/dataset-moe-speech-20speakers-v2 \
+  --dataset-dir /home/shadeform/data/piper/dataset-moe-speech-20speakers-v2 \
   --prosody-dim 16 \
   --accelerator gpu --devices 4 --precision 16-mixed \
   --max_epochs 200 --batch-size 12 --samples-per-speaker 2 \
   --checkpoint-epochs 1 --quality medium \
   --base_lr 2e-4 --disable_auto_lr_scaling \
   --ema-decay 0.9995 --num-workers 0 --no-pin-memory \
-  --default_root_dir /data/piper/output-moe-speech-20speakers-wavlm
-```
-
-**NCCL環境変数（マルチGPU必須）:**
-```bash
-NCCL_DEBUG=WARN
-NCCL_P2P_DISABLE=1
-NCCL_IB_DISABLE=1
+  --default_root_dir /home/shadeform/data/piper/output-moe-speech-20speakers-wavlm
 ```
 
 </details>
-
-### 話者数別の推奨設定
-
-| 話者数 | batch_size | samples_per_speaker | 実効バッチ | 備考 |
-|-------|------------|---------------------|-----------|------|
-| 5話者 | 20 | 4 | 20 | ✅ 検証済み |
-| **20話者** | **32** | **4** | **32** | RTX 6000 Ada推奨 |
-| 20話者 (旧) | 20 | 2 | 40 | V100 × 4 検証済み |
 
 ---
 
@@ -425,35 +278,24 @@ NCCL_IB_DISABLE=1
 | トークンマッパー | `src/python/piper_train/phonemize/token_mapper.py` |
 | ONNXエクスポート | `src/python/piper_train/export_onnx.py` |
 | 推論スクリプト | `src/python/piper_train/infer_onnx.py` |
+| Speaker Embedding抽出 | `src/python/piper_train/extract_speaker_embedding.py` |
+| Zero-shotデータ準備 | `src/python/piper_train/prepare_zero_shot_dataset.py` |
 
-### データセット
+### データセット・モデル
 
-| 用途 | パス | 発話数 | 特徴 |
-|------|------|--------|------|
-| **20話者 v2** ✅最新 | `/data/piper/dataset-moe-speech-20speakers-v2/` | 60,164 | Issue #204, #207 対応 |
-| 20話者 (従来版) | `/data/piper/dataset-moe-speech-20speakers/` | 60,164 | 旧トークン体系 |
-
-### 学習済み/学習中モデル
-
-| 用途 | パス | 状態 |
-|------|------|------|
-| **20話者 WavLM** | `/data/piper/output-moe-speech-20speakers-wavlm/` | 🟡 学習中 (75%) |
-| 20話者 v2 (200epoch) | `/data/piper/output-moe-speech-20speakers-v2/moe-speech-20speakers-v2.onnx` | ✅ 完了 |
-| つくよみちゃん | HuggingFace: `ayousanz/piper-plus-tsukuyomi-chan` | ✅ 完了 |
+| 用途 | パス |
+|------|------|
+| **20話者 (embedding付き)** ✅最新 | `/home/shadeform/data/piper/dataset-moe-speech-20speakers/` |
+| 20話者 v2 | `/home/shadeform/data/piper/dataset-moe-speech-20speakers-v2/` |
+| CAM++ ONNXモデル | `/home/shadeform/data/piper/models/campplus.onnx` |
+| 20話者 v2 ONNX | `/home/shadeform/data/piper/output-moe-speech-20speakers-v2/moe-speech-20speakers-v2.onnx` |
+| つくよみちゃん | HuggingFace: `ayousanz/piper-plus-tsukuyomi-chan` |
 
 ### 便利ツール
 
 | ツール | 実行コマンド | 用途 |
 |--------|-------------|------|
 | `piper_train.tools.add_prosody_features` | `uv run python -m piper_train.tools.add_prosody_features` | 既存データセットにprosody_features追加＋phoneme_ids再生成 |
-
-**使用例**:
-```bash
-uv run python -m piper_train.tools.add_prosody_features \
-  --input-dataset /data/piper/dataset-moe-speech-20speakers/dataset.jsonl \
-  --output-dir /data/piper/dataset-moe-speech-20speakers-v2 \
-  --workers 8
-```
 
 ---
 
@@ -462,38 +304,50 @@ uv run python -m piper_train.tools.add_prosody_features \
 ### ONNX変換
 
 ```bash
-# ベースラインモデル（deterministic、従来通り）
+# Speaker ID モード（従来互換）
 CUDA_VISIBLE_DEVICES="" uv run python -m piper_train.export_onnx \
-  --no-ema \
-  /path/to/checkpoint.ckpt \
-  /path/to/output.onnx
+  --export-mode sid \
+  /path/to/checkpoint.ckpt /path/to/output_sid.onnx
 
-# WavLMモデル（stochastic + EMA重み適用）
+# Zero-shot モード（speaker embedding入力）
 CUDA_VISIBLE_DEVICES="" uv run python -m piper_train.export_onnx \
-  --stochastic \
-  /path/to/checkpoint.ckpt \
-  /path/to/output.onnx
+  --export-mode zero-shot \
+  /path/to/checkpoint.ckpt /path/to/output_zs.onnx
 ```
 
 | オプション | デフォルト | 説明 |
 |-----------|----------|------|
-| `--stochastic` | off | noise_scaleによるサンプリングを有効化（WavLMモデル推奨） |
+| `--export-mode` | `auto` | `auto`: 自動判定, `sid`: speaker ID入力, `zero-shot`: speaker embedding入力 |
+| `--stochastic` | off | noise_scaleによるサンプリングを有効化 |
 | `--use-ema` | on | チェックポイントのEMA重みをデコーダに適用 |
 | `--no-ema` | - | EMA重み適用を無効化 |
 
 ### 推論テスト
 
 ```bash
-cat /path/to/test.jsonl | \
-  CUDA_VISIBLE_DEVICES="" uv run python -m piper_train.infer_onnx \
-    --model /path/to/model.onnx \
-    --output-dir /path/to/output
+# Speaker ID指定（従来方式）
+CUDA_VISIBLE_DEVICES="" uv run python -m piper_train.infer_onnx \
+  --model /path/to/sid_model.onnx \
+  --config /path/to/config.json \
+  --output-dir /path/to/output \
+  --text "こんにちは、今日は良い天気ですね。" \
+  --speaker-id 0
+
+# Zero-shot推論（speaker embedding入力）
+CUDA_VISIBLE_DEVICES="" uv run python -m piper_train.infer_onnx \
+  --model /path/to/zero_shot_model.onnx \
+  --config /path/to/config.json \
+  --output-dir /path/to/output \
+  --text "こんにちは、今日は良い天気ですね。" \
+  --speaker-embedding /path/to/speaker.npy
+
+# JSONL入力
+cat test.jsonl | CUDA_VISIBLE_DEVICES="" uv run python -m piper_train.infer_onnx \
+  --model /path/to/model.onnx \
+  --output-dir /path/to/output
 ```
 
-**JSONLフォーマット:**
-```json
-{"phoneme_ids": [1, 8, 5, 39, ...], "speaker_id": 0, "prosody_features": [{"a1": -2, "a2": 1, "a3": 5}, ...]}
-```
+**speaker_embedding.npy**: 192次元float32配列。`extract_speaker_embedding.py` で生成。
 
 ---
 
@@ -508,12 +362,24 @@ cat /path/to/test.jsonl | \
 2. `--disable_auto_lr_scaling` を使用
 3. 学習率を下げる（`--base_lr 1e-4`）
 
+### gin_channels=768でガビガビ音が発生
+
+**原因**: gin_channelsが大きすぎてspeaker conditioningが過剰に影響
+
+**対処法**: gin_channels=512を使用（デフォルト）
+
 ### GPUメモリ不足 (OOM)
 
 **対処法**:
-1. NCCL環境変数を設定
-2. `batch_size` と `samples_per_speaker` を下げる
-3. 異なるバッチサイズからのリジュームを避ける
+1. `batch_size` と `samples_per_speaker` を下げる
+2. 異なるバッチサイズからのリジュームを避ける
+
+### Zero-shot推論でエラーが出る
+
+**対処法**:
+1. `--speaker-embedding` で指定する `.npy` ファイルの存在を確認
+2. `numpy.load(path).shape` が `(192,)` であることを確認
+3. `--export-mode zero-shot` で変換したONNXモデルを使用しているか確認
 
 ### ONNX変換エラー
 
@@ -536,8 +402,9 @@ cat /path/to/test.jsonl | \
 | PR/Issue | 内容 | 状態 |
 |----------|------|------|
 | PR #244 | C++/Python CLI UX改善 (--text, --list-models, --download-model) | Open |
+| `feat/zero-shot-tts` | Zero-Shot TTS (Dual-Mode Speaker Conditioning) | 開発中 |
 | PR #230 | Docker テスト強化・ブランチ統一 | Merged |
-| PR #229 | C++/Python音素化パイプライン同期 (M1-M4) | Open |
+| PR #229 | C++/Python音素化パイプライン同期 (M1-M4) | Merged |
 | PR #212 | WavLM Discriminator追加 | Open |
 | PR #210 | Issue #204, #207 実装 | Open |
 | Issue #204 | 疑問詞マーカーの拡張 | 実装完了 |
