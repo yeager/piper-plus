@@ -50,6 +50,9 @@ def spectrogram_torch(y, n_fft, sampling_rate, hop_size, win_size, center=False)
     if wnsize_dtype_device not in hann_window:
         hann_window[wnsize_dtype_device] = torch.hann_window(win_size).type_as(y)
 
+    # cuFFT does not support BFloat16; cast to float32 for STFT
+    y = y.float()
+
     y = torch.nn.functional.pad(
         y.unsqueeze(1),
         (int((n_fft - hop_size) / 2), int((n_fft - hop_size) / 2)),
@@ -63,7 +66,7 @@ def spectrogram_torch(y, n_fft, sampling_rate, hop_size, win_size, center=False)
             n_fft,
             hop_length=hop_size,
             win_length=win_size,
-            window=hann_window[wnsize_dtype_device],
+            window=hann_window[wnsize_dtype_device].float(),
             center=center,
             pad_mode="reflect",
             normalized=False,
@@ -111,6 +114,10 @@ def mel_spectrogram_torch(
     if wnsize_dtype_device not in hann_window:
         hann_window[wnsize_dtype_device] = torch.hann_window(win_size).type_as(y)
 
+    # cuFFT does not support BFloat16; cast to float32 for STFT
+    orig_dtype = y.dtype
+    y = y.float()
+
     y = torch.nn.functional.pad(
         y.unsqueeze(1),
         (int((n_fft - hop_size) / 2), int((n_fft - hop_size) / 2)),
@@ -123,7 +130,7 @@ def mel_spectrogram_torch(
             n_fft,
             hop_length=hop_size,
             win_length=win_size,
-            window=hann_window[wnsize_dtype_device],
+            window=hann_window[wnsize_dtype_device].float(),
             center=center,
             pad_mode="reflect",
             normalized=False,

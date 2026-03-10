@@ -214,5 +214,8 @@ inline-quotes = "double"
 # Docker test scripts: テスト関数内での条件付きインポートを許可
 "docker/**/test.py" = ["PLC0415"]
 
+[tool.setuptools.packages.find]
+where = ["src/python"]
+
 [tool.setuptools.dynamic]
 version = {file = "VERSION"}
