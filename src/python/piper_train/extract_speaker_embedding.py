@@ -13,6 +13,11 @@ Usage:
     # Dataset (all speakers at once)
     uv run python -m piper_train.extract_speaker_embedding \
         --encoder models/campplus.onnx --dataset-dir dataset/ --output-dir embeddings/
+
+    # Per-utterance (optimized with DataLoader + batch inference)
+    uv run python -m piper_train.extract_speaker_embedding \
+        --encoder models/campplus.onnx --dataset-dir dataset/ --per-utterance \
+        --batch-size 64 --num-workers 12
 """
 
 from __future__ import annotations
@@ -20,6 +25,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -27,12 +33,22 @@ import numpy as np
 import torch
 import torchaudio
 
-
 if TYPE_CHECKING:
     import onnxruntime
 
 
 _LOGGER = logging.getLogger("piper_train.extract_speaker_embedding")
+
+# Resamplerキャッシュ: (source_sr, target_sr) → Resample transform
+_RESAMPLER_CACHE: dict[tuple[int, int], torchaudio.transforms.Resample] = {}
+
+
+def _get_resampler(source_sr: int, target_sr: int) -> torchaudio.transforms.Resample:
+    """キャッシュ済みResamplerを取得する。毎回フィルタ再計算を避ける。"""
+    key = (source_sr, target_sr)
+    if key not in _RESAMPLER_CACHE:
+        _RESAMPLER_CACHE[key] = torchaudio.transforms.Resample(source_sr, target_sr)
+    return _RESAMPLER_CACHE[key]
 
 
 def preprocess_audio(wav_path: str | Path, target_sr: int = 16000) -> np.ndarray:
@@ -51,9 +67,9 @@ def preprocess_audio(wav_path: str | Path, target_sr: int = 16000) -> np.ndarray
     if waveform.shape[0] > 1:
         waveform = waveform.mean(dim=0, keepdim=True)
 
-    # リサンプリング
+    # リサンプリング (キャッシュ済みResampler使用)
     if sr != target_sr:
-        waveform = torchaudio.functional.resample(waveform, sr, target_sr)
+        waveform = _get_resampler(sr, target_sr)(waveform)
 
     # 80-dim Fbank (kaldi互換)
     fbank = torchaudio.compliance.kaldi.fbank(
@@ -83,15 +99,13 @@ def _load_audio_from_pt(
     Returns:
         fbank: np.ndarray, shape [T, 80], float32
     """
-    audio_tensor = torch.load(pt_path, weights_only=True)  # [1, samples] or [samples]
+    audio_tensor = torch.load(pt_path, weights_only=True, map_location="cpu", mmap=True)
     if audio_tensor.dim() == 1:
         audio_tensor = audio_tensor.unsqueeze(0)
 
-    # リサンプリング (e.g. 22050 → 16000)
+    # リサンプリング (キャッシュ済みResampler使用)
     if source_sr != target_sr:
-        audio_tensor = torchaudio.functional.resample(
-            audio_tensor, source_sr, target_sr
-        )
+        audio_tensor = _get_resampler(source_sr, target_sr)(audio_tensor)
 
     # Fbank
     fbank = torchaudio.compliance.kaldi.fbank(
@@ -213,7 +227,7 @@ def extract_from_dataset(
                 _LOGGER.warning("File not found, skipping: %s", pt_path)
                 continue
             try:
-                audio_tensor = torch.load(pt_path, weights_only=True)
+                audio_tensor = torch.load(pt_path, weights_only=True, map_location="cpu")
                 num_samples = audio_tensor.shape[-1]
                 duration = num_samples / source_sr
                 if duration >= min_duration:
@@ -261,22 +275,108 @@ def extract_from_dataset(
         )
 
 
+# ---------------------------------------------------------------------------
+# Per-utterance extraction with DataLoader + batch ONNX inference
+# ---------------------------------------------------------------------------
+
+class _FbankDataset(torch.utils.data.Dataset):
+    """DataLoader用Dataset: PTファイルからFbank特徴量を並列抽出する。
+
+    各ワーカープロセスで独立にCPU前処理（torch.load → resample → fbank）を実行し、
+    メインプロセスのGPU ONNX推論にバッチで渡す。
+    """
+
+    def __init__(
+        self,
+        items: list[tuple[int, Path, str]],
+        source_sr: int,
+        target_sr: int = 16000,
+    ):
+        self.items = items  # (entry_index, pt_path, stem)
+        self.source_sr = source_sr
+        self.target_sr = target_sr
+        # Resamplerをキャッシュ（各ワーカーに1インスタンス、pickle経由でコピー）
+        self.resampler = (
+            torchaudio.transforms.Resample(source_sr, target_sr)
+            if source_sr != target_sr
+            else None
+        )
+
+    def __len__(self) -> int:
+        return len(self.items)
+
+    def __getitem__(self, idx: int) -> tuple[int, torch.Tensor, str, bool]:
+        entry_idx, pt_path, stem = self.items[idx]
+        try:
+            audio_tensor = torch.load(pt_path, weights_only=True, map_location="cpu", mmap=True)
+            if audio_tensor.dim() == 1:
+                audio_tensor = audio_tensor.unsqueeze(0)
+            if self.resampler is not None:
+                audio_tensor = self.resampler(audio_tensor)
+            fbank = torchaudio.compliance.kaldi.fbank(
+                audio_tensor,
+                num_mel_bins=80,
+                frame_length=25.0,
+                frame_shift=10.0,
+                sample_frequency=self.target_sr,
+            )
+            fbank = fbank - fbank.mean(dim=0, keepdim=True)
+            return entry_idx, fbank, stem, True
+        except Exception as e:
+            _LOGGER.warning("Worker failed to load %s: %s", pt_path, e)
+            return entry_idx, torch.zeros(1, 80), stem, False
+
+
+def _collate_fbanks(
+    batch: list[tuple[int, torch.Tensor, str, bool]],
+) -> tuple[list[int], np.ndarray, list[str], list[bool]]:
+    """可変長Fbankをゼロパディングしてバッチ化する。"""
+    indices, fbanks, stems, valids = zip(*batch)
+    max_t = max(f.shape[0] for f in fbanks)
+    padded = torch.zeros(len(fbanks), max_t, 80)
+    for i, f in enumerate(fbanks):
+        padded[i, : f.shape[0], :] = f
+    return list(indices), padded.numpy().astype(np.float32), list(stems), list(valids)
+
+
+def _write_updated_jsonl(dataset_dir: Path, entries: list[dict]) -> None:
+    """dataset.jsonlをバックアップして更新する。"""
+    output_jsonl = dataset_dir / "dataset.jsonl"
+    backup_path = dataset_dir / "dataset.jsonl.bak"
+    shutil.copy2(output_jsonl, backup_path)
+    _LOGGER.info("Backed up original to: %s", backup_path)
+    with open(output_jsonl, "w", encoding="utf-8") as f:
+        for entry in entries:
+            json.dump(entry, f, ensure_ascii=True)
+            f.write("\n")
+    _LOGGER.info(
+        "Updated dataset.jsonl with speaker_embedding_path (%d entries)", len(entries)
+    )
+
+
 def extract_per_utterance(
     session: onnxruntime.InferenceSession,
     dataset_dir: Path,
     output_dir: Path,
     source_sr: int = 22050,
+    batch_size: int = 64,
+    num_workers: int = 12,
 ) -> None:
     """dataset.jsonl の各発話ごとにembeddingを抽出し、dataset.jsonlを更新する。
 
-    Zero-shot TTS学習用: 発話ごとに個別のembeddingを生成することで、
-    推論時の条件（1発話からのembedding抽出）と学習時の条件を一致させる。
+    最適化:
+    1. DataLoader (num_workers) でCPU前処理を並列化 (GIL回避)
+    2. バッチONNX推論でGPU効率を最大化
+    3. 既存embedding事前キャッシュでファイルI/O削減
+    4. Resamplerキャッシュでフィルタ再計算を回避
 
     Args:
         session: ONNX Runtime session.
         dataset_dir: Dataset directory containing dataset.jsonl.
         output_dir: Output directory for speaker embedding .npy files.
         source_sr: Sample rate of .pt audio files in the dataset.
+        batch_size: Batch size for ONNX inference.
+        num_workers: Number of DataLoader workers for CPU preprocessing.
     """
     jsonl_path = dataset_dir / "dataset.jsonl"
     if not jsonl_path.exists():
@@ -296,9 +396,15 @@ def extract_per_utterance(
 
     _LOGGER.info("Total utterances: %d", len(entries))
 
-    # 各発話のembeddingを抽出
-    success = 0
+    # 最適化3: 既存.npyファイル名を事前キャッシュ (O(1)ルックアップ)
+    existing_stems: set[str] = {p.stem for p in emb_dir.glob("*.npy")}
+    _LOGGER.info("Already extracted: %d embeddings (pre-cached)", len(existing_stems))
+
+    # 既存embeddingのパス設定 + 未抽出アイテム収集
+    items_to_extract: list[tuple[int, Path, str]] = []
+    skipped = 0
     fail = 0
+
     for i, utt in enumerate(entries):
         audio_norm_path = utt.get("audio_norm_path")
         if not audio_norm_path:
@@ -309,67 +415,95 @@ def extract_per_utterance(
         if not pt_path.is_absolute():
             pt_path = dataset_dir / pt_path
 
+        stem = pt_path.stem
+        npy_rel = f"speaker_embeddings/{stem}.npy"
+
+        if stem in existing_stems:
+            utt["speaker_embedding_path"] = npy_rel
+            skipped += 1
+            continue
+
         if not pt_path.exists():
             _LOGGER.warning("File not found, skipping: %s", pt_path)
             fail += 1
             continue
 
-        # audio_norm_path のハッシュ名をそのまま使用
-        stem = pt_path.stem  # e.g. "7325a0a4c9be...ff3"
-        npy_filename = f"{stem}.npy"
-        npy_path = emb_dir / npy_filename
+        items_to_extract.append((i, pt_path, stem))
 
-        # 既に抽出済みならスキップ
-        if npy_path.exists():
-            utt["speaker_embedding_path"] = str(
-                npy_path.relative_to(dataset_dir)
-                if str(npy_path).startswith(str(dataset_dir))
-                else npy_path
-            )
+    _LOGGER.info(
+        "To extract: %d, skipped (existing): %d, failed: %d",
+        len(items_to_extract),
+        skipped,
+        fail,
+    )
+
+    if not items_to_extract:
+        _LOGGER.info("All embeddings already extracted")
+        _write_updated_jsonl(dataset_dir, entries)
+        return
+
+    # 最適化1+4: DataLoader (並列CPU前処理 + Resamplerキャッシュ)
+    dataset = _FbankDataset(items_to_extract, source_sr=source_sr)
+    loader_kwargs: dict = {
+        "batch_size": batch_size,
+        "num_workers": num_workers,
+        "collate_fn": _collate_fbanks,
+        "pin_memory": True,
+    }
+    if num_workers > 0:
+        loader_kwargs["prefetch_factor"] = 4
+        loader_kwargs["persistent_workers"] = True
+    loader = torch.utils.data.DataLoader(dataset, **loader_kwargs)
+
+    input_name = session.get_inputs()[0].name
+    success = skipped
+    total_batches = (len(items_to_extract) + batch_size - 1) // batch_size
+
+    _LOGGER.info(
+        "Starting batch extraction: %d batches (batch_size=%d, workers=%d)",
+        total_batches,
+        batch_size,
+        num_workers,
+    )
+
+    # 最適化2: バッチONNX推論
+    for batch_idx, (indices, fbanks_batch, stems, valids) in enumerate(loader):
+        # バッチ推論: [B, T_max, 80] → [B, 192]
+        embeddings_batch = session.run(None, {input_name: fbanks_batch})[0]
+
+        # L2正規化 (バッチ全体を一括処理)
+        norms = np.linalg.norm(embeddings_batch, axis=1, keepdims=True)
+        norms = np.maximum(norms, 1e-8)
+        embeddings_batch = embeddings_batch / norms
+
+        for j, (entry_idx, stem, valid) in enumerate(zip(indices, stems, valids)):
+            if not valid:
+                fail += 1
+                continue
+
+            npy_path = emb_dir / f"{stem}.npy"
+            np.save(str(npy_path), embeddings_batch[j])
+
+            entries[entry_idx]["speaker_embedding_path"] = f"speaker_embeddings/{stem}.npy"
             success += 1
-            if (i + 1) % 5000 == 0:
-                _LOGGER.info("Progress: %d / %d (skipped existing)", i + 1, len(entries))
-            continue
 
-        try:
-            fbank = _load_audio_from_pt(pt_path, source_sr=source_sr)
-            emb = extract_embedding(session, fbank)
-            np.save(str(npy_path), emb)
-
-            # dataset_dirからの相対パスを設定
-            utt["speaker_embedding_path"] = str(
-                npy_path.relative_to(dataset_dir)
-                if str(npy_path).startswith(str(dataset_dir))
-                else npy_path
+        if (batch_idx + 1) % 50 == 0 or batch_idx + 1 == total_batches:
+            _LOGGER.info(
+                "Batch %d/%d (success=%d, fail=%d)",
+                batch_idx + 1,
+                total_batches,
+                success,
+                fail,
             )
-            success += 1
-        except Exception:
-            _LOGGER.warning("Failed to extract embedding: %s", pt_path, exc_info=True)
-            fail += 1
-            continue
-
-        if (i + 1) % 1000 == 0:
-            _LOGGER.info("Progress: %d / %d (success=%d, fail=%d)", i + 1, len(entries), success, fail)
 
     _LOGGER.info(
         "Extraction complete: %d success, %d failed out of %d total",
-        success, fail, len(entries),
+        success,
+        fail,
+        len(entries),
     )
 
-    # 更新されたdataset.jsonlを書き出し
-    output_jsonl = dataset_dir / "dataset.jsonl"
-    backup_path = dataset_dir / "dataset.jsonl.bak"
-
-    # バックアップ
-    import shutil
-    shutil.copy2(output_jsonl, backup_path)
-    _LOGGER.info("Backed up original to: %s", backup_path)
-
-    with open(output_jsonl, "w", encoding="utf-8") as f:
-        for entry in entries:
-            json.dump(entry, f, ensure_ascii=True)
-            f.write("\n")
-    _LOGGER.info("Updated dataset.jsonl with speaker_embedding_path (%d entries)", len(entries))
+    _write_updated_jsonl(dataset_dir, entries)
 
 
 def main():
@@ -415,6 +549,18 @@ def main():
         help="Extract per-utterance embeddings (recommended for zero-shot TTS training). "
         "Updates dataset.jsonl in-place with speaker_embedding_path.",
     )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=64,
+        help="Batch size for per-utterance ONNX inference (default: 64)",
+    )
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=12,
+        help="Number of DataLoader workers for CPU preprocessing (default: 12)",
+    )
     args = parser.parse_args()
 
     # 排他制御
@@ -440,14 +586,29 @@ def main():
     # ONNX session (GPU優先、なければCPU)
     import onnxruntime  # noqa: PLC0415
 
+    sess_options = onnxruntime.SessionOptions()
+    sess_options.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_EXTENDED
+    sess_options.enable_mem_reuse = True
+    sess_options.enable_mem_pattern = True
+
+    cuda_provider_options = {
+        "arena_extend_strategy": "kSameAsRequested",
+        "do_copy_in_default_stream": False,
+    }
+
     providers = onnxruntime.get_available_providers()
     if "CUDAExecutionProvider" in providers:
         session = onnxruntime.InferenceSession(
-            args.encoder, providers=["CUDAExecutionProvider", "CPUExecutionProvider"]
+            args.encoder,
+            sess_options,
+            providers=[
+                ("CUDAExecutionProvider", cuda_provider_options),
+                "CPUExecutionProvider",
+            ],
         )
         _LOGGER.info("Using GPU (CUDAExecutionProvider)")
     else:
-        session = onnxruntime.InferenceSession(args.encoder)
+        session = onnxruntime.InferenceSession(args.encoder, sess_options)
         _LOGGER.info("Using CPU (CUDAExecutionProvider not available)")
     _LOGGER.info("Loaded speaker encoder: %s", args.encoder)
 
@@ -486,6 +647,8 @@ def main():
                 dataset_dir=dataset_dir,
                 output_dir=dataset_dir,
                 source_sr=args.source_sample_rate,
+                batch_size=args.batch_size,
+                num_workers=args.num_workers,
             )
         else:
             extract_from_dataset(

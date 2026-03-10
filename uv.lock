@@ -2391,6 +2391,7 @@ dependencies = [
     { name = "g2p-en" },
     { name = "huggingface-hub" },
     { name = "numpy" },
+    { name = "onnxruntime-gpu" },
     { name = "tensorboard" },
 ]
 
@@ -2505,6 +2506,7 @@ requires-dist = [
     { name = "onnxruntime", marker = "extra == 'inference'", specifier = ">=1.17" },
     { name = "onnxruntime", marker = "extra == 'train'", specifier = ">=1.17" },
     { name = "onnxruntime", marker = "extra == 'zero-shot'", specifier = ">=1.24.3" },
+    { name = "onnxruntime-gpu", specifier = ">=1.24.3" },
     { name = "onnxruntime-gpu", marker = "extra == 'inference-gpu'", specifier = ">=1.17" },
     { name = "onnxsim-prebuilt", marker = "extra == 'train'" },
     { name = "piper-phonemize", marker = "extra == 'preprocess'", specifier = ">=1.1.0" },
