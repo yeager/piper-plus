@@ -437,10 +437,18 @@ def main():
     if args.dataset_dir and not args.per_utterance and not args.output_dir:
         parser.error("--output-dir is required with --dataset-dir (unless --per-utterance)")
 
-    # ONNX session
+    # ONNX session (GPU優先、なければCPU)
     import onnxruntime  # noqa: PLC0415
 
-    session = onnxruntime.InferenceSession(args.encoder)
+    providers = onnxruntime.get_available_providers()
+    if "CUDAExecutionProvider" in providers:
+        session = onnxruntime.InferenceSession(
+            args.encoder, providers=["CUDAExecutionProvider", "CPUExecutionProvider"]
+        )
+        _LOGGER.info("Using GPU (CUDAExecutionProvider)")
+    else:
+        session = onnxruntime.InferenceSession(args.encoder)
+        _LOGGER.info("Using CPU (CUDAExecutionProvider not available)")
     _LOGGER.info("Loaded speaker encoder: %s", args.encoder)
 
     if args.audio:
