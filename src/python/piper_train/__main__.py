@@ -382,10 +382,11 @@ def main():
     # Zero-Shot TTS: argparse の zero_shot を use_zero_shot に変換
     if dict_args.pop("zero_shot", False):
         dict_args["use_zero_shot"] = True
-        # Zero-Shot モードでは gin_channels=768 を強制
-        dict_args["gin_channels"] = 768
+        # Zero-Shot モードでも gin_channels=512 を使用
+        # 768ではガビガビ音が発生する問題あり (feat/multilingual-phonemizer で検証済み)
+        dict_args["gin_channels"] = 512
         _LOGGER.info(
-            "Zero-Shot TTS mode enabled: gin_channels=768, spk_embed_dim=%d",
+            "Zero-Shot TTS mode enabled: gin_channels=512, spk_embed_dim=%d",
             dict_args.get("spk_embed_dim", 192),
         )
 
@@ -393,9 +394,10 @@ def main():
     if dict_args.pop("no_wavlm", False):
         dict_args["use_wavlm_discriminator"] = False
 
-    # マルチスピーカーモデルの場合も gin_channels=768 に統一
+    # マルチスピーカーモデルの場合、gin_channels=512 に設定
+    # 768ではガビガビ音が発生する問題あり (feat/multilingual-phonemizer で検証済み)
     if num_speakers > 1 and dict_args.get("gin_channels", 0) <= 0:
-        dict_args["gin_channels"] = 768
+        dict_args["gin_channels"] = 512
 
     # num_workers自動調整機能を削除
     # ユーザー指定のnum_workersをそのまま使用する
