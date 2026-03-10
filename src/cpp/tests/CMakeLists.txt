@@ -38,6 +38,7 @@ set(TEST_SOURCES
     test_n_variants.cpp
     test_question_markers.cpp
     test_model_speaker_detection.cpp
+    test_zero_shot_embedding.cpp
     test_custom_dictionary.cpp
     test_text_input.cpp
     test_model_manager.cpp

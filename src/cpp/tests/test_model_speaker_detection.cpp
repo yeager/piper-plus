@@ -15,6 +15,7 @@ struct TestModelSession {
     bool hasDurationOutput = false;
     bool hasProsodyInput = false;
     bool hasMultiSpeaker = false;
+    bool hasZeroShotInput = false;
 };
 
 // Helper function that mirrors the input name building logic from piper.cpp
@@ -29,6 +30,11 @@ std::vector<const char*> buildInputNames(const TestModelSession& session) {
     // Add prosody features if model supports them
     if (session.hasProsodyInput) {
         inputNamesVec.push_back("prosody_features");
+    }
+
+    // Add speaker embedding for zero-shot models
+    if (session.hasZeroShotInput) {
+        inputNamesVec.push_back("speaker_embedding");
     }
 
     return inputNamesVec;
@@ -195,6 +201,132 @@ TEST(ModelSpeakerDetectionTest, BaseInputsAlwaysPresent) {
             << ", hasProsodyInput=" << combo.second;
         EXPECT_TRUE(containsInput(inputs, "scales"))
             << "scales missing for hasMultiSpeaker=" << combo.first
+            << ", hasProsodyInput=" << combo.second;
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Test: Zero-Shot Speaker Embedding Input Names
+// ----------------------------------------------------------------------------
+
+TEST(ModelSpeakerDetectionTest, ZeroShotInputNames) {
+    TestModelSession session;
+    session.hasMultiSpeaker = false;
+    session.hasZeroShotInput = true;
+    session.hasProsodyInput = false;
+
+    auto inputs = buildInputNames(session);
+
+    // Should have 4 inputs: input, input_lengths, scales, speaker_embedding
+    EXPECT_EQ(inputs.size(), 4);
+
+    EXPECT_TRUE(containsInput(inputs, "input"));
+    EXPECT_TRUE(containsInput(inputs, "input_lengths"));
+    EXPECT_TRUE(containsInput(inputs, "scales"));
+    EXPECT_TRUE(containsInput(inputs, "speaker_embedding"));
+
+    // sid should NOT be present for zero-shot models
+    EXPECT_FALSE(containsInput(inputs, "sid"));
+}
+
+// ----------------------------------------------------------------------------
+// Test: Zero-Shot with Prosody
+// ----------------------------------------------------------------------------
+
+TEST(ModelSpeakerDetectionTest, ZeroShotWithProsody) {
+    TestModelSession session;
+    session.hasMultiSpeaker = false;
+    session.hasZeroShotInput = true;
+    session.hasProsodyInput = true;
+
+    auto inputs = buildInputNames(session);
+
+    // Should have 5 inputs: input, input_lengths, scales, prosody_features, speaker_embedding
+    EXPECT_EQ(inputs.size(), 5);
+
+    EXPECT_TRUE(containsInput(inputs, "input"));
+    EXPECT_TRUE(containsInput(inputs, "input_lengths"));
+    EXPECT_TRUE(containsInput(inputs, "scales"));
+    EXPECT_TRUE(containsInput(inputs, "prosody_features"));
+    EXPECT_TRUE(containsInput(inputs, "speaker_embedding"));
+
+    // sid should NOT be present
+    EXPECT_FALSE(containsInput(inputs, "sid"));
+}
+
+// ----------------------------------------------------------------------------
+// Test: Zero-Shot Input Order (prosody before speaker_embedding)
+// ----------------------------------------------------------------------------
+
+TEST(ModelSpeakerDetectionTest, InputOrderProsodyBeforeSpeakerEmbedding) {
+    TestModelSession session;
+    session.hasZeroShotInput = true;
+    session.hasProsodyInput = true;
+
+    auto inputs = buildInputNames(session);
+
+    int prosodyPos = -1, embeddingPos = -1;
+    for (size_t i = 0; i < inputs.size(); i++) {
+        if (std::string(inputs[i]) == "prosody_features") prosodyPos = i;
+        if (std::string(inputs[i]) == "speaker_embedding") embeddingPos = i;
+    }
+
+    EXPECT_NE(prosodyPos, -1);
+    EXPECT_NE(embeddingPos, -1);
+
+    // prosody_features should come before speaker_embedding (matches ONNX export order)
+    EXPECT_LT(prosodyPos, embeddingPos);
+}
+
+// ----------------------------------------------------------------------------
+// Test: Zero-Shot and Multi-Speaker are Mutually Exclusive in Practice
+// ----------------------------------------------------------------------------
+
+TEST(ModelSpeakerDetectionTest, ZeroShotDoesNotIncludeSid) {
+    // In practice, a zero-shot model uses speaker_embedding instead of sid.
+    // If both flags happen to be set, both inputs are added (model decides).
+    TestModelSession session;
+    session.hasMultiSpeaker = true;
+    session.hasZeroShotInput = true;
+    session.hasProsodyInput = false;
+
+    auto inputs = buildInputNames(session);
+
+    // Both sid and speaker_embedding present
+    EXPECT_TRUE(containsInput(inputs, "sid"));
+    EXPECT_TRUE(containsInput(inputs, "speaker_embedding"));
+    EXPECT_EQ(inputs.size(), 5);
+}
+
+// ----------------------------------------------------------------------------
+// Test: Zero-Shot Base Inputs Always Present
+// ----------------------------------------------------------------------------
+
+TEST(ModelSpeakerDetectionTest, ZeroShotBaseInputsAlwaysPresent) {
+    std::vector<std::pair<bool, bool>> combinations = {
+        {false, false},  // zero-shot only
+        {false, true},   // zero-shot + prosody
+        {true, false},   // zero-shot + multi-speaker (unlikely)
+        {true, true}     // zero-shot + multi-speaker + prosody (unlikely)
+    };
+
+    for (const auto& combo : combinations) {
+        TestModelSession session;
+        session.hasMultiSpeaker = combo.first;
+        session.hasProsodyInput = combo.second;
+        session.hasZeroShotInput = true;
+
+        auto inputs = buildInputNames(session);
+
+        EXPECT_TRUE(containsInput(inputs, "input"))
+            << "input missing for hasMultiSpeaker=" << combo.first
+            << ", hasProsodyInput=" << combo.second;
+        EXPECT_TRUE(containsInput(inputs, "input_lengths"))
+            << "input_lengths missing";
+        EXPECT_TRUE(containsInput(inputs, "scales"))
+            << "scales missing";
+        EXPECT_TRUE(containsInput(inputs, "speaker_embedding"))
+            << "speaker_embedding missing for hasMultiSpeaker=" << combo.first
             << ", hasProsodyInput=" << combo.second;
     }
 }

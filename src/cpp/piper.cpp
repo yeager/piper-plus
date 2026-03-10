@@ -273,6 +273,14 @@ void parseModelConfig(json &configRoot, ModelConfig &modelConfig) {
     }
   }
 
+  if (configRoot.contains("use_zero_shot")) {
+    modelConfig.useZeroShot = configRoot["use_zero_shot"].get<bool>();
+  }
+
+  if (configRoot.contains("spk_embed_dim")) {
+    modelConfig.spkEmbedDim = configRoot["spk_embed_dim"].get<int>();
+  }
+
 } /* parseModelConfig */
 
 // Constants for phoneme timing
@@ -672,6 +680,9 @@ void loadModel(std::string modelPath, ModelSession &session, bool useCuda, int g
     } else if (name == "sid") {
       session.hasMultiSpeaker = true;
       spdlog::debug("Model supports multi-speaker (sid input)");
+    } else if (name == "speaker_embedding") {
+      session.hasZeroShotInput = true;
+      spdlog::debug("Model supports zero-shot speaker embedding input");
     }
   }
 }
@@ -776,7 +787,25 @@ void synthesize(std::vector<PhonemeId> &phonemeIds,
     }
     inputNamesVec.push_back("prosody_features");
   }
-  
+
+  // Add speaker embedding for zero-shot models
+  std::vector<float> speakerEmbeddingData;
+  if (session.hasZeroShotInput) {
+    if (synthesisConfig.speakerEmbedding && !synthesisConfig.speakerEmbedding->empty()) {
+      speakerEmbeddingData = synthesisConfig.speakerEmbedding.value();
+    } else {
+      // Use zero embedding as fallback
+      int embDim = voice ? voice->modelConfig.spkEmbedDim : 192;
+      speakerEmbeddingData.resize(embDim, 0.0f);
+    }
+
+    std::vector<int64_t> embeddingShape{1, (int64_t)speakerEmbeddingData.size()};
+    inputTensors.push_back(Ort::Value::CreateTensor<float>(
+        memoryInfo, speakerEmbeddingData.data(), speakerEmbeddingData.size(),
+        embeddingShape.data(), embeddingShape.size()));
+    inputNamesVec.push_back("speaker_embedding");
+  }
+
   // Check if we should get duration output
   std::vector<const char *> outputNamesVec;
   outputNamesVec.push_back("output");

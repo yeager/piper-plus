@@ -67,6 +67,9 @@ struct RunConfig {
   // Numerical id of the default speaker (multi-speaker voices)
   optional<piper::SpeakerId> speakerId;
 
+  // Path to speaker embedding .npy file (zero-shot TTS)
+  optional<filesystem::path> speakerEmbeddingPath;
+
   // Amount of noise to add during audio generation
   optional<float> noiseScale;
 
@@ -294,6 +297,62 @@ int main(int argc, char *argv[]) {
   auto endTime = chrono::steady_clock::now();
   spdlog::info("Loaded voice in {} second(s)",
                chrono::duration<double>(endTime - startTime).count());
+
+  // Load speaker embedding from .npy file for zero-shot TTS
+  if (runConfig.speakerEmbeddingPath) {
+    auto embPath = runConfig.speakerEmbeddingPath.value();
+    if (!filesystem::exists(embPath)) {
+      spdlog::error("Speaker embedding file not found: {}", embPath.string());
+      return EXIT_FAILURE;
+    }
+
+    // Read .npy file (NumPy format: magic + version + header + float32 data)
+    ifstream npyFile(embPath.string(), ios::binary);
+    if (!npyFile.good()) {
+      spdlog::error("Cannot open speaker embedding file: {}", embPath.string());
+      return EXIT_FAILURE;
+    }
+
+    // Skip .npy header: magic(6) + version(2) + header_len(2) + header
+    char magic[6];
+    npyFile.read(magic, 6);
+    if (magic[0] != '\x93' || string(magic + 1, 5) != "NUMPY") {
+      spdlog::error("Invalid .npy file format: {}", embPath.string());
+      return EXIT_FAILURE;
+    }
+
+    uint8_t major_ver, minor_ver;
+    npyFile.read(reinterpret_cast<char*>(&major_ver), 1);
+    npyFile.read(reinterpret_cast<char*>(&minor_ver), 1);
+
+    uint32_t header_len = 0;
+    if (major_ver == 1) {
+      uint16_t hl;
+      npyFile.read(reinterpret_cast<char*>(&hl), 2);
+      header_len = hl;
+    } else {
+      npyFile.read(reinterpret_cast<char*>(&header_len), 4);
+    }
+
+    // Skip header content (contains dtype, shape, etc.)
+    npyFile.seekg(header_len, ios::cur);
+
+    // Read remaining bytes as float32 array
+    auto dataStart = npyFile.tellg();
+    npyFile.seekg(0, ios::end);
+    auto dataEnd = npyFile.tellg();
+    npyFile.seekg(dataStart);
+
+    size_t dataBytes = dataEnd - dataStart;
+    size_t numFloats = dataBytes / sizeof(float);
+
+    vector<float> embedding(numFloats);
+    npyFile.read(reinterpret_cast<char*>(embedding.data()), dataBytes);
+
+    voice.synthesisConfig.speakerEmbedding = std::move(embedding);
+    spdlog::info("Loaded speaker embedding: {} dimensions from {}",
+                 numFloats, embPath.string());
+  }
 
   // Get the path to the piper executable so we can locate espeak-ng-data, etc.
   // next to it.
@@ -719,6 +778,9 @@ void printUsage(char *argv[]) {
           "becomes available"
        << endl;
   cerr << "   -s  NUM   --speaker     NUM   id of speaker (default: 0)" << endl;
+  cerr << "   --speaker-embedding FILE      path to speaker embedding .npy file "
+          "(zero-shot TTS)"
+       << endl;
   cerr << "   --noise_scale           NUM   generator noise (default: 0.667)"
        << endl;
   cerr << "   --length_scale          NUM   phoneme length (default: 1.0)"
@@ -844,6 +906,9 @@ void parseArgs(int argc, char *argv[], RunConfig &runConfig) {
     } else if (arg == "-s" || arg == "--speaker") {
       ensureArg(argc, argv, i);
       runConfig.speakerId = (piper::SpeakerId)stol(argv[++i]);
+    } else if (arg == "--speaker-embedding" || arg == "--speaker_embedding") {
+      ensureArg(argc, argv, i);
+      runConfig.speakerEmbeddingPath = filesystem::path(argv[++i]);
     } else if (arg == "--noise_scale" || arg == "--noise-scale") {
       ensureArg(argc, argv, i);
       runConfig.noiseScale = stof(argv[++i]);

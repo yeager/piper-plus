@@ -74,6 +74,9 @@ struct SynthesisConfig {
   // Speaker id from 0 to numSpeakers - 1
   std::optional<SpeakerId> speakerId;
 
+  // Speaker embedding for zero-shot TTS (e.g., 192-dim from CAM++)
+  std::optional<std::vector<float>> speakerEmbedding;
+
   // Extra silence
   float sentenceSilenceSeconds = 0.2f;
   std::optional<std::map<piper::Phoneme, float>> phonemeSilenceSeconds;
@@ -84,6 +87,8 @@ struct ModelConfig {
 
   // speaker name -> id
   std::optional<std::map<std::string, SpeakerId>> speakerIdMap;
+  bool useZeroShot = false;
+  int spkEmbedDim = 192;
 };
 
 struct ModelSession {
@@ -94,6 +99,7 @@ struct ModelSession {
   bool hasDurationOutput = false;  // Whether model outputs duration information
   bool hasProsodyInput = false;    // Whether model accepts prosody_features input
   bool hasMultiSpeaker = false;    // Whether model has sid (speaker ID) input
+  bool hasZeroShotInput = false;  // Whether model has speaker_embedding input
 
   ModelSession() : onnx(nullptr){};
 };
