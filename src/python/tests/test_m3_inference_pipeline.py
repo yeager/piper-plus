@@ -95,7 +95,7 @@ class TestExportOnnxZeroShot:
             length_scale = scales[1]
             noise_scale_w = scales[2]
             x, m_p, logs_p, x_mask = model.enc_p(text, text_lengths)
-            g = model.spk_proj(speaker_embedding).unsqueeze(-1)
+            g = model._get_speaker_condition(sid, speaker_embedding)
             x_dp = model._prepare_prosody_input(x, x_mask, prosody_features)
             logw = model.dp(x_dp, x_mask, g=g, reverse=True, noise_scale=noise_scale_w)
             w = torch.exp(logw) * x_mask * length_scale
@@ -307,11 +307,13 @@ class TestExportOnnxZeroShot:
             prosody_features=None,
             speaker_embedding=None,
         ):
+            length_scale = scales[1]
+            noise_scale_w = scales[2]
             x, m_p, logs_p, x_mask = zs_model.enc_p(text, text_lengths)
-            g = zs_model.spk_proj(speaker_embedding).unsqueeze(-1)
+            g = zs_model._get_speaker_condition(sid, speaker_embedding)
             x_dp = zs_model._prepare_prosody_input(x, x_mask, prosody_features)
-            logw = zs_model.dp(x_dp, x_mask, g=g, reverse=True, noise_scale=0.8)
-            w = torch.exp(logw) * x_mask * 1.0
+            logw = zs_model.dp(x_dp, x_mask, g=g, reverse=True, noise_scale=noise_scale_w)
+            w = torch.exp(logw) * x_mask * length_scale
             w_ceil = torch.ceil(w)
             y_lengths = torch.clamp_min(torch.sum(w_ceil, [1, 2]), 1).long()
             y_mask = torch.unsqueeze(

@@ -90,7 +90,7 @@ class VitsModel(pl.LightningModule):
         wavlm_model_name: str = "microsoft/wavlm-base-plus",
         c_wavlm: float = 0.5,
         # Training loop optimization
-        d_update_interval: int = 2,
+        d_update_interval: int = 1,
         max_spec_length: int = 700,
         **kwargs,
     ):
@@ -106,7 +106,7 @@ class VitsModel(pl.LightningModule):
         self.save_hyperparameters()
 
         # Discriminator update interval (D:G = 1:d_update_interval)
-        self.d_update_interval = self.hparams.get("d_update_interval", 2)
+        self.d_update_interval = self.hparams.get("d_update_interval", 1)
 
         # Cache for discriminator real-side outputs (shared between G and D steps)
         # These are set in training_step_g and reused in training_step_d to avoid

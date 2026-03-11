@@ -233,14 +233,7 @@ def main() -> None:
         # 1. Encoder
         x, m_p, logs_p, x_mask = model_g.enc_p(text, text_lengths)
 
-        if use_zero_shot:
-            g = model_g.spk_proj(speaker_embedding).unsqueeze(
-                -1
-            )  # [b, gin_channels, 1]
-        elif model_g.n_speakers > 1 and sid is not None:
-            g = model_g.emb_g(sid).unsqueeze(-1)
-        else:
-            g = None
+        g = model_g._get_speaker_condition(sid, speaker_embedding)
 
         # 2. Duration Predictor (called only once)
         x_dp = model_g._prepare_prosody_input(x, x_mask, prosody_features)

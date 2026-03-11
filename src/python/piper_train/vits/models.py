@@ -833,6 +833,24 @@ class SynthesizerTrn(nn.Module):
             self.emb_g = nn.Embedding(n_speakers, gin_channels)
         if use_zero_shot:
             self.spk_proj = nn.Linear(spk_embed_dim, gin_channels)
+            # Learnable scale factor to match emb_g norm (~sqrt(gin_channels))
+            self.spk_scale = nn.Parameter(
+                torch.tensor(float(gin_channels) ** 0.5)
+            )
+
+    def _get_speaker_condition(self, sid, speaker_embedding):
+        """Compute speaker conditioning vector g from sid or speaker_embedding."""
+        if speaker_embedding is not None and hasattr(self, "spk_proj"):
+            g = self.spk_proj(speaker_embedding)
+            g = torch.nn.functional.normalize(g, dim=-1) * self.spk_scale
+            return g.unsqueeze(-1)
+        elif sid is not None and hasattr(self, "emb_g"):
+            return self.emb_g(sid).unsqueeze(-1)
+        elif self.n_speakers > 1 or self.use_zero_shot:
+            raise ValueError(
+                "Either speaker_embedding or sid must be provided for multi-speaker/zero-shot model"
+            )
+        return None
 
     def _prepare_prosody_input(self, x, x_mask, prosody_features):
         """Prepare encoder output with prosody features for duration predictor.
@@ -883,16 +901,7 @@ class SynthesizerTrn(nn.Module):
         speaker_embedding=None,
     ):
         x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths)
-        if speaker_embedding is not None and hasattr(self, "spk_proj"):
-            g = self.spk_proj(speaker_embedding).unsqueeze(-1)
-        elif sid is not None and hasattr(self, "emb_g"):
-            g = self.emb_g(sid).unsqueeze(-1)
-        elif self.n_speakers > 1 or self.use_zero_shot:
-            raise ValueError(
-                "Either speaker_embedding or sid must be provided for multi-speaker/zero-shot model"
-            )
-        else:
-            g = None
+        g = self._get_speaker_condition(sid, speaker_embedding)
 
         z, m_q, logs_q, y_mask = self.enc_q(y, y_lengths, g=g)
         z_p = self.flow(z, y_mask, g=g)
@@ -966,16 +975,7 @@ class SynthesizerTrn(nn.Module):
         speaker_embedding=None,
     ):
         x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths)
-        if speaker_embedding is not None and hasattr(self, "spk_proj"):
-            g = self.spk_proj(speaker_embedding).unsqueeze(-1)
-        elif sid is not None and hasattr(self, "emb_g"):
-            g = self.emb_g(sid).unsqueeze(-1)
-        elif self.n_speakers > 1 or self.use_zero_shot:
-            raise ValueError(
-                "Either speaker_embedding or sid must be provided for multi-speaker/zero-shot model"
-            )
-        else:
-            g = None
+        g = self._get_speaker_condition(sid, speaker_embedding)
 
         # Prepare input for duration predictor with prosody features
         x_dp = self._prepare_prosody_input(x, x_mask, prosody_features)
