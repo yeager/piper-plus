@@ -114,6 +114,52 @@ C++/Python CLIにモデル管理・テキスト直接入力機能を追加。Win
 - `src/python_run/piper/download.py` — Python モデルダウンロード
 - `scripts/speak.bat`, `scripts/speak.ps1` — Windows ヘルパー
 
+### 3段階前処理パイプライン ✅ NEW (2026-03-11)
+
+従来の一体型前処理（~12 utt/s）を3段階に分離して大幅に高速化。合計約10-15分（従来約80分）で5-8倍高速化。
+
+**ステージ1: 音素化（--skip-audio）**
+```bash
+uv run python -m piper_train.preprocess \
+  --input-dir /data/moe-speech-20speakers-ljspeech \
+  --output-dir /data/piper/dataset-zero-shot-20speakers \
+  --language ja --sample-rate 22050 --dataset-format ljspeech \
+  --max-workers 30 --skip-audio
+```
+- 60,233件を1分51秒で完了（538 utt/s）
+- audio pathはNone（後で更新）
+
+**ステージ2: 音声正規化（cache_audio）**
+```bash
+uv run python -m piper_train.tools.cache_audio \
+  --dataset /data/piper/dataset-zero-shot-20speakers/dataset.jsonl \
+  --cache-dir /data/piper/dataset-zero-shot-20speakers/cache/22050 \
+  --sample-rate 22050 \
+  --workers 30
+```
+- Energy VAD + soxr リサンプリング
+- 60,233件を2分20秒で完了（429 it/s）
+- .ptファイル保存、dataset.jsonl自動更新
+
+**ステージ3: スペクトログラム計算（batch_spectrograms）**
+```bash
+uv run python -m piper_train.tools.batch_spectrograms \
+  --cache-dir /data/piper/dataset-zero-shot-20speakers/cache/22050 \
+  --workers 30
+```
+- CPU並列でスペクトログラム計算
+- .spec.ptファイル保存（FP16）
+
+**Energy VADサポート:**
+- `--energy-vad` フラグ（preprocess.pyにデフォルト有効）
+- `--no-energy-vad` でSilero VADにフォールバック
+- `energy_vad_numpy()`: numpy vectorized RMS VAD
+- `cache_norm_audio_fast()`: Energy VAD + soxr（Sileroの50倍高速）
+
+**実装ファイル:**
+- `src/python/piper_train/tools/cache_audio.py` — 音声正規化（Energy VAD + soxr）
+- `src/python/piper_train/tools/batch_spectrograms.py` — CPU並列スペクトログラム計算
+
 ### Zero-Shot TTS (Dual-Mode Speaker Conditioning) ✅ NEW (2026-03-10)
 
 マルチスピーカーモデルでデフォルト有効（フラグ不要）。`emb_g` (nn.Embedding) と `spk_proj` (nn.Linear) が同一モデルに共存し、speaker ID指定とspeaker embedding指定の両方で推論可能。
@@ -285,7 +331,8 @@ uv run python -m piper_train \
 
 | 用途 | パス |
 |------|------|
-| **20話者 (embedding付き)** ✅最新 | `/home/shadeform/data/piper/dataset-moe-speech-20speakers/` |
+| **Zero-Shot 20話者** ✅最新 | `/data/piper/dataset-zero-shot-20speakers/` |
+| 20話者 (embedding付き) | `/home/shadeform/data/piper/dataset-moe-speech-20speakers/` |
 | 20話者 v2 | `/home/shadeform/data/piper/dataset-moe-speech-20speakers-v2/` |
 | CAM++ ONNXモデル | `/home/shadeform/data/piper/models/campplus.onnx` |
 | 20話者 v2 ONNX | `/home/shadeform/data/piper/output-moe-speech-20speakers-v2/moe-speech-20speakers-v2.onnx` |
@@ -296,6 +343,8 @@ uv run python -m piper_train \
 | ツール | 実行コマンド | 用途 |
 |--------|-------------|------|
 | `piper_train.tools.add_prosody_features` | `uv run python -m piper_train.tools.add_prosody_features` | 既存データセットにprosody_features追加＋phoneme_ids再生成 |
+| `piper_train.tools.cache_audio` | `uv run python -m piper_train.tools.cache_audio` | 音声正規化（Energy VAD + soxr リサンプリング） |
+| `piper_train.tools.batch_spectrograms` | `uv run python -m piper_train.tools.batch_spectrograms` | CPU並列スペクトログラム計算 |
 
 ---
 

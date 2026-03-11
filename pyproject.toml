@@ -17,6 +17,7 @@ dependencies = [
     "piper-train[train]",
     "cython>=3.2.4",
     "onnxscript>=0.6.2",
+    "soxr>=1.0.0",
 ]
 
 [project.optional-dependencies]

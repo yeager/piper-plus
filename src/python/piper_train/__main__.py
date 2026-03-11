@@ -170,7 +170,7 @@ def main():
     parser.add_argument(
         "--d-update-interval",
         type=int,
-        default=2,
+        default=1,
         help="Discriminator update interval (1=every step, 2=every other step)",
     )
     parser.add_argument(

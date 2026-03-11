@@ -41,7 +41,7 @@ except ImportError:
     tashkeel_run = None
 
 from .f0_extraction import cache_f0
-from .norm_audio import cache_norm_audio, make_silence_detector
+from .norm_audio import cache_norm_audio, cache_norm_audio_fast, make_silence_detector
 
 
 # Custom Japanese phonemizer
@@ -166,6 +166,14 @@ def main() -> None:
         default=880.0,
         help="Maximum F0 value in Hz (default: 880.0)",
     )
+    parser.add_argument(
+        "--energy-vad",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use fast energy-based VAD instead of Silero ONNX VAD "
+        "(~50x faster, default: enabled). Use --no-energy-vad to "
+        "fall back to Silero VAD.",
+    )
     args = parser.parse_args()
 
     if args.single_speaker and (args.speaker_id is not None):
@@ -183,6 +191,12 @@ def main() -> None:
     import warnings
 
     warnings.filterwarnings("ignore", category=UserWarning)
+
+    # Log VAD mode
+    if args.energy_vad:
+        _LOGGER.info("Using energy-based VAD (fast mode, ~50x faster than Silero)")
+    else:
+        _LOGGER.info("Using Silero ONNX VAD (--no-energy-vad)")
 
     # Ensure enum
     args.phoneme_type = PhonemeType(args.phoneme_type)
@@ -410,6 +424,30 @@ def get_text_casing(casing: str):
     return lambda s: s
 
 
+def _cache_audio(
+    args: argparse.Namespace,
+    utt: "Utterance",
+    silence_detector: "SileroVoiceActivityDetector | None",
+) -> tuple[Path, Path]:
+    """Dispatch audio caching to energy VAD or Silero VAD based on args."""
+    if getattr(args, "energy_vad", True):
+        return cache_norm_audio_fast(
+            utt.audio_path,
+            args.cache_dir,
+            args.sample_rate,
+        )
+    else:
+        assert silence_detector is not None, (
+            "silence_detector must be provided when --no-energy-vad is used"
+        )
+        return cache_norm_audio(
+            utt.audio_path,
+            args.cache_dir,
+            silence_detector,
+            args.sample_rate,
+        )
+
+
 def phonemize_batch_espeak(
     args: argparse.Namespace, queue_in: JoinableQueue, queue_out: Queue
 ):
@@ -420,7 +458,9 @@ def phonemize_batch_espeak(
             os.dup2(devnull_fd, 2)
 
         casing = get_text_casing(args.text_casing)
-        silence_detector = make_silence_detector()
+        silence_detector = (
+            make_silence_detector() if not getattr(args, "energy_vad", True) else None
+        )
 
         # Timeout
         timeout_sec = getattr(args, "timeout_seconds", 0)
@@ -457,11 +497,8 @@ def phonemize_batch_espeak(
                         missing_phonemes=utt.missing_phonemes,
                     )
                     if not args.skip_audio:
-                        utt.audio_norm_path, utt.audio_spec_path = cache_norm_audio(
-                            utt.audio_path,
-                            args.cache_dir,
-                            silence_detector,
-                            args.sample_rate,
+                        utt.audio_norm_path, utt.audio_spec_path = _cache_audio(
+                            args, utt, silence_detector
                         )
                     queue_out.put(utt)
                     if timeout_sec > 0:
@@ -487,7 +524,9 @@ def phonemize_batch_text(
             os.dup2(devnull_fd, 2)
 
         casing = get_text_casing(args.text_casing)
-        silence_detector = make_silence_detector()
+        silence_detector = (
+            make_silence_detector() if not getattr(args, "energy_vad", True) else None
+        )
 
         timeout_sec = getattr(args, "timeout_seconds", 0)
 
@@ -523,11 +562,8 @@ def phonemize_batch_text(
                         missing_phonemes=utt.missing_phonemes,
                     )
                     if not args.skip_audio:
-                        utt.audio_norm_path, utt.audio_spec_path = cache_norm_audio(
-                            utt.audio_path,
-                            args.cache_dir,
-                            silence_detector,
-                            args.sample_rate,
+                        utt.audio_norm_path, utt.audio_spec_path = _cache_audio(
+                            args, utt, silence_detector
                         )
                     queue_out.put(utt)
                     if timeout_sec > 0:
@@ -553,7 +589,9 @@ def phonemize_batch_openjtalk(
             os.dup2(devnull_fd, 2)
 
         casing = get_text_casing(args.text_casing)
-        silence_detector = make_silence_detector()
+        silence_detector = (
+            make_silence_detector() if not getattr(args, "energy_vad", True) else None
+        )
 
         # カスタム辞書を読み込む（存在する場合）
         custom_dict = None
@@ -630,11 +668,8 @@ def phonemize_batch_openjtalk(
                         )
 
                     if not args.skip_audio:
-                        utt.audio_norm_path, utt.audio_spec_path = cache_norm_audio(
-                            utt.audio_path,
-                            args.cache_dir,
-                            silence_detector,
-                            args.sample_rate,
+                        utt.audio_norm_path, utt.audio_spec_path = _cache_audio(
+                            args, utt, silence_detector
                         )
 
                         # Extract F0 if enabled
