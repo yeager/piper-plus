@@ -5,10 +5,16 @@ import pathlib
 import platform
 from pathlib import Path
 
-import torch
+import pathlib
 
-from .vits import commons
-from .vits.lightning import VitsModel
+import torch
+import torch.serialization
+
+# Allow PosixPath/WindowsPath in checkpoint (PyTorch 2.6+ weights_only=True)
+torch.serialization.add_safe_globals([pathlib.PosixPath, pathlib.WindowsPath])
+
+from .vits import commons  # noqa: E402
+from .vits.lightning import VitsModel  # noqa: E402
 
 
 # Allow Path objects in checkpoints (PyTorch 2.6+ weights_only=True)
