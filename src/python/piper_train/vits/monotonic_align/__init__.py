@@ -115,13 +115,9 @@ def _mas_backward_eager(value, t_y_lens, t_x_lens, out_dtype):
         idx_prev = (index - 1).clamp(min=0)
 
         val_at_idx = value[:, y - 1, :].gather(1, idx_clamped.unsqueeze(1)).squeeze(1)
-        val_at_idx_m1 = (
-            value[:, y - 1, :].gather(1, idx_prev.unsqueeze(1)).squeeze(1)
-        )
+        val_at_idx_m1 = value[:, y - 1, :].gather(1, idx_prev.unsqueeze(1)).squeeze(1)
 
-        do_dec = active & (index != 0) & (
-            (index == y) | (val_at_idx < val_at_idx_m1)
-        )
+        do_dec = active & (index != 0) & ((index == y) | (val_at_idx < val_at_idx_m1))
         index = index - do_dec.long()
 
     return path
