@@ -92,11 +92,13 @@ class TestExportOnnxZeroShot:
             prosody_features=None,
             speaker_embedding=None,
         ):
+            length_scale = scales[1]
+            noise_scale_w = scales[2]
             x, m_p, logs_p, x_mask = model.enc_p(text, text_lengths)
             g = model.spk_proj(speaker_embedding).unsqueeze(-1)
             x_dp = model._prepare_prosody_input(x, x_mask, prosody_features)
-            logw = model.dp(x_dp, x_mask, g=g, reverse=True, noise_scale=0.8)
-            w = torch.exp(logw) * x_mask * 1.0
+            logw = model.dp(x_dp, x_mask, g=g, reverse=True, noise_scale=noise_scale_w)
+            w = torch.exp(logw) * x_mask * length_scale
             w_ceil = torch.ceil(w)
             y_lengths = torch.clamp_min(torch.sum(w_ceil, [1, 2]), 1).long()
             y_mask = torch.unsqueeze(
@@ -142,18 +144,19 @@ class TestExportOnnxZeroShot:
                 "input",
                 "input_lengths",
                 "scales",
-                "speaker_embedding",
                 "prosody_features",
+                "speaker_embedding",
             ],
             output_names=["output", "durations"],
             dynamic_axes={
                 "input": {0: "batch_size", 1: "phonemes"},
                 "input_lengths": {0: "batch_size"},
-                "speaker_embedding": {0: "batch_size"},
                 "prosody_features": {0: "batch_size", 1: "phonemes"},
+                "speaker_embedding": {0: "batch_size"},
                 "output": {0: "batch_size", 1: "time"},
                 "durations": {0: "batch_size", 1: "phonemes"},
             },
+            dynamo=False,
         )
 
         # Load with onnxruntime
@@ -261,6 +264,7 @@ class TestExportOnnxZeroShot:
                 "output": {0: "batch_size", 1: "time"},
                 "durations": {0: "batch_size", 1: "phonemes"},
             },
+            dynamo=False,
         )
 
         session = onnxruntime.InferenceSession(str(onnx_path))
@@ -351,18 +355,19 @@ class TestExportOnnxZeroShot:
                 "input",
                 "input_lengths",
                 "scales",
-                "speaker_embedding",
                 "prosody_features",
+                "speaker_embedding",
             ],
             output_names=["output", "durations"],
             dynamic_axes={
                 "input": {0: "batch_size", 1: "phonemes"},
                 "input_lengths": {0: "batch_size"},
-                "speaker_embedding": {0: "batch_size"},
                 "prosody_features": {0: "batch_size", 1: "phonemes"},
+                "speaker_embedding": {0: "batch_size"},
                 "output": {0: "batch_size", 1: "time"},
                 "durations": {0: "batch_size", 1: "phonemes"},
             },
+            dynamo=False,
         )
 
         # --- Multispeaker model ---
@@ -425,6 +430,7 @@ class TestExportOnnxZeroShot:
                 "output": {0: "batch_size", 1: "time"},
                 "durations": {0: "batch_size", 1: "phonemes"},
             },
+            dynamo=False,
         )
 
         # Compare sizes
