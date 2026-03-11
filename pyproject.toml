@@ -18,6 +18,7 @@ dependencies = [
     "cython>=3.2.4",
     "onnxscript>=0.6.2",
     "soxr>=1.0.0",
+    "onnxruntime-gpu>=1.24.3",
 ]
 
 [project.optional-dependencies]
