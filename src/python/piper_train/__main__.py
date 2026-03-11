@@ -168,6 +168,21 @@ def main():
         help="Number of steps to freeze speaker encoder (Phase 1). Default: 100000",
     )
     parser.add_argument(
+        "--spk-emb-dropout",
+        type=float,
+        default=0.5,
+        help="Probability of dropping speaker embeddings per batch during training, "
+        "forcing the model to use speaker ID (emb_g) instead. "
+        "Enables dual-mode learning (both emb_g and spk_proj). "
+        "0.0=always use embedding, 1.0=always use speaker ID. (default: 0.5)",
+    )
+    parser.add_argument(
+        "--grad-clip",
+        type=float,
+        default=1.0,
+        help="Gradient norm clipping value (default: 1.0, None to disable)",
+    )
+    parser.add_argument(
         "--d-update-interval",
         type=int,
         default=1,

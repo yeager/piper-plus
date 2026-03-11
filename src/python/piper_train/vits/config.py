@@ -108,7 +108,7 @@ class ModelConfig:
 
     def __post_init__(self):
         if self.use_zero_shot and (self.gin_channels <= 0):
-            self.gin_channels = 768
+            self.gin_channels = 512
         elif self.is_multispeaker and (self.gin_channels <= 0):
             self.gin_channels = 512
 

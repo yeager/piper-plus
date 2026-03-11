@@ -10,7 +10,14 @@ from torch.utils.data import DataLoader, Dataset, random_split
 
 from .commons import slice_segments
 from .dataset import Batch, PiperDataset, SpeakerBalancedBatchSampler, UtteranceCollate
-from .losses import discriminator_loss, feature_loss, generator_loss, kl_loss
+from .losses import (
+    dino_loss,
+    discriminator_loss,
+    feature_loss,
+    generator_loss,
+    kl_loss,
+    speaker_consistency_loss,
+)
 from .mel_processing import mel_spectrogram_torch, spec_to_mel_torch
 from .models import MultiPeriodDiscriminator, SynthesizerTrn, WavLMDiscriminator
 
@@ -85,6 +92,8 @@ class VitsModel(pl.LightningModule):
         c_dino: float = 0.1,
         speaker_encoder_path: str | None = None,
         freeze_speaker_encoder_steps: int = 100000,
+        # Speaker embedding dropout for dual-mode training
+        spk_emb_dropout: float = 0.5,
         # WavLM Discriminator (enabled by default for improved audio quality)
         use_wavlm_discriminator: bool = True,
         wavlm_model_name: str = "microsoft/wavlm-base-plus",
@@ -386,11 +395,14 @@ class VitsModel(pl.LightningModule):
     def training_step(self, batch: Batch, batch_idx: int):
         # Manual optimization for multiple optimizers
         opt_g, opt_d = self.optimizers()
+        grad_clip = self.hparams.grad_clip
 
         # Train generator (every step)
         opt_g.zero_grad()
         loss_g = self.training_step_g(batch)
         self.manual_backward(loss_g)
+        if grad_clip is not None:
+            torch.nn.utils.clip_grad_norm_(self.model_g.parameters(), grad_clip)
         opt_g.step()
 
         # Train discriminator (every d_update_interval steps)
@@ -398,6 +410,11 @@ class VitsModel(pl.LightningModule):
             opt_d.zero_grad()
             loss_d = self.training_step_d(batch)
             self.manual_backward(loss_d)
+            if grad_clip is not None:
+                d_params = list(self.model_d.parameters())
+                if self.model_d_wavlm is not None:
+                    d_params = d_params + list(self.model_d_wavlm.parameters())
+                torch.nn.utils.clip_grad_norm_(d_params, grad_clip)
             opt_d.step()
         else:
             _LOGGER.debug(
@@ -453,6 +470,16 @@ class VitsModel(pl.LightningModule):
         speaker_embeddings = (
             batch.speaker_embeddings if batch.speaker_embeddings is not None else None
         )
+
+        # Dual-mode training: randomly drop speaker embeddings to train emb_g
+        if (
+            self.training
+            and speaker_embeddings is not None
+            and speaker_ids is not None
+            and torch.rand(1).item() < self.hparams.spk_emb_dropout
+        ):
+            speaker_embeddings = None
+
         (
             y_hat,
             l_length,
@@ -551,6 +578,54 @@ class VitsModel(pl.LightningModule):
                 # Log WavLM losses
                 self._log_with_batch_info("loss_gen_wavlm", loss_gen_wavlm, batch)
                 self._log_with_batch_info("loss_fm_wavlm", loss_fm_wavlm, batch)
+
+            # --- Speaker Consistency Loss (SCL) ---
+            # SCL requires a speaker encoder to extract embeddings from generated
+            # audio (y_hat) and compare them against the reference embeddings.
+            # Currently speaker_encoder is not initialized in __init__ (only
+            # speaker_encoder_path is accepted as a hyperparameter), so SCL is
+            # skipped until a speaker encoder forward pass is implemented.
+            if (
+                self.hparams.c_spk > 0
+                and speaker_embeddings is not None
+                and hasattr(self, "speaker_encoder")
+                and self.speaker_encoder is not None
+            ):
+                with torch.no_grad():
+                    gen_embedding = self.speaker_encoder(y_hat.squeeze(1))
+                loss_spk = (
+                    speaker_consistency_loss(gen_embedding, speaker_embeddings)
+                    * self.hparams.c_spk
+                )
+                loss_gen_all = loss_gen_all + loss_spk
+                self._log_with_batch_info("loss_spk", loss_spk, batch)
+
+            # --- DINO Self-Distillation Loss ---
+            # Uses spk_proj output as student and the input speaker_embeddings
+            # as teacher. No speaker encoder needed — operates entirely in the
+            # embedding space of the generator's projection layer.
+            if (
+                self.hparams.c_dino > 0
+                and speaker_embeddings is not None
+                and hasattr(self.model_g, "spk_proj")
+            ):
+                # Student: spk_proj(speaker_embeddings) — the projected embedding
+                # that the generator actually conditions on.
+                student_emb = self.model_g.spk_proj(speaker_embeddings)
+                # Teacher: raw speaker_embeddings (detached, from CAM++ encoder).
+                # Detach to prevent gradients flowing back through the teacher.
+                teacher_emb = speaker_embeddings.detach()
+                loss_dino = (
+                    dino_loss(student_emb, teacher_emb, self.dino_center)
+                    * self.hparams.c_dino
+                )
+                loss_gen_all = loss_gen_all + loss_dino
+                self._log_with_batch_info("loss_dino", loss_dino, batch)
+
+                # Update DINO center with EMA (momentum = 0.996)
+                with torch.no_grad():
+                    batch_center = teacher_emb.mean(dim=0)
+                    self.dino_center = self.dino_center * 0.996 + batch_center * 0.004
 
             self._log_with_batch_info("loss_gen_all", loss_gen_all, batch)
 
