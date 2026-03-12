@@ -546,6 +546,8 @@ class SpeakerBalancedBatchSampler:
         speaker_pointers = dict.fromkeys(self.speakers, 0)
 
         batch_idx = 0
+        yielded = 0
+        max_batches = self.__len__()
         while True:
             # 十分なサンプルが残っている話者を選択
             available_speakers = [
@@ -571,6 +573,10 @@ class SpeakerBalancedBatchSampler:
             # DDP: このGPUが担当するバッチのみを返す
             if batch_idx % self.world_size == self.rank:
                 yield batch
+                yielded += 1
+                # DDP: 全rankで同数のバッチを保証（NCCL deadlock防止）
+                if yielded >= max_batches:
+                    return
             batch_idx += 1
 
     def __len__(self) -> int:

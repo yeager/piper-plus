@@ -127,7 +127,7 @@ class VitsModel(pl.LightningModule):
 
         # DINO center buffer for zero-shot training
         if use_zero_shot:
-            self.register_buffer("dino_center", torch.zeros(spk_embed_dim))
+            self.register_buffer("dino_center", torch.zeros(gin_channels))
 
         # Set up models
         self.model_g = SynthesizerTrn(
@@ -471,14 +471,19 @@ class VitsModel(pl.LightningModule):
             batch.speaker_embeddings if batch.speaker_embeddings is not None else None
         )
 
-        # Dual-mode training: randomly drop speaker embeddings to train emb_g
+        # Dual-mode training: deterministically drop speaker embeddings to train emb_g.
+        # Uses global_step-based hash instead of torch.rand() to ensure all DDP ranks
+        # make the same dropout decision (prevents NCCL allreduce deadlock).
         if (
             self.training
             and speaker_embeddings is not None
             and speaker_ids is not None
-            and torch.rand(1).item() < self.hparams.spk_emb_dropout
+            and self.hparams.spk_emb_dropout > 0
         ):
-            speaker_embeddings = None
+            # Deterministic pseudo-random: hash(step) gives same value on all ranks
+            drop = ((self.global_step * 2654435761) & 0xFFFFFFFF) / 0xFFFFFFFF
+            if drop < self.hparams.spk_emb_dropout:
+                speaker_embeddings = None
 
         (
             y_hat,
@@ -612,9 +617,10 @@ class VitsModel(pl.LightningModule):
                 # Student: spk_proj(speaker_embeddings) — the projected embedding
                 # that the generator actually conditions on.
                 student_emb = self.model_g.spk_proj(speaker_embeddings)
-                # Teacher: raw speaker_embeddings (detached, from CAM++ encoder).
-                # Detach to prevent gradients flowing back through the teacher.
-                teacher_emb = speaker_embeddings.detach()
+                # Teacher: spk_proj output detached — both student and teacher
+                # operate in the same gin_channels-dim space (512).
+                with torch.no_grad():
+                    teacher_emb = self.model_g.spk_proj(speaker_embeddings).detach()
                 loss_dino = (
                     dino_loss(student_emb, teacher_emb, self.dino_center)
                     * self.hparams.c_dino
@@ -623,9 +629,14 @@ class VitsModel(pl.LightningModule):
                 self._log_with_batch_info("loss_dino", loss_dino, batch)
 
                 # Update DINO center with EMA (momentum = 0.996)
+                # Uses in-place ops to preserve register_buffer tracking.
                 with torch.no_grad():
                     batch_center = teacher_emb.mean(dim=0)
-                    self.dino_center = self.dino_center * 0.996 + batch_center * 0.004
+                    if torch.distributed.is_initialized():
+                        torch.distributed.all_reduce(
+                            batch_center, op=torch.distributed.ReduceOp.AVG
+                        )
+                    self.dino_center.mul_(0.996).add_(batch_center, alpha=0.004)
 
             self._log_with_batch_info("loss_gen_all", loss_gen_all, batch)
 
@@ -682,33 +693,45 @@ class VitsModel(pl.LightningModule):
         val_loss = self.training_step_g(batch) + self.training_step_d(batch)
         self._log_with_batch_info("val_loss", val_loss, batch)
 
-        # Generate audio examples
+        # Audio generation is done in on_validation_epoch_end (outside DDP forward)
+        # to avoid NCCL sync issues between ranks.
+
+        return val_loss
+
+    def on_validation_epoch_end(self):
+        """Generate audio examples on rank 0 only (outside DDP forward)."""
+        if self.global_rank != 0:
+            return
         for utt_idx, test_utt in enumerate(self._test_dataset):
             text = test_utt.phoneme_ids.unsqueeze(0).to(self.device)
-            text_lengths = torch.LongTensor([len(test_utt.phoneme_ids)]).to(self.device)
-            scales = [0.667, 1.0, 0.8]
+            text_lengths = torch.LongTensor([len(test_utt.phoneme_ids)]).to(
+                self.device
+            )
             sid = (
                 test_utt.speaker_id.to(self.device)
                 if test_utt.speaker_id is not None
                 else None
             )
-            # Zero-shot mode: use a default zero embedding for validation
             spk_emb = None
             if self.hparams.use_zero_shot:
-                spk_emb = torch.zeros(1, self.hparams.spk_embed_dim, device=self.device)
-            test_audio = self(
-                text, text_lengths, scales, sid=sid, speaker_embedding=spk_emb
-            ).detach()
-
-            # Scale to make louder in [-1, 1]
+                spk_emb = torch.zeros(
+                    1, self.hparams.spk_embed_dim, device=self.device
+                )
+            with torch.no_grad():
+                test_audio, *_ = self.model_g.infer(
+                    text,
+                    text_lengths,
+                    sid=sid,
+                    noise_scale=0.667,
+                    length_scale=1.0,
+                    noise_scale_w=0.8,
+                    speaker_embedding=spk_emb,
+                )
             test_audio = test_audio * (1.0 / max(0.01, abs(test_audio.max())))
-
             tag = test_utt.text or str(utt_idx)
             self.logger.experiment.add_audio(
                 tag, test_audio, sample_rate=self.hparams.sample_rate
             )
-
-        return val_loss
 
     def configure_optimizers(self):
         # Collect discriminator parameters (including WavLM if enabled)
