@@ -95,9 +95,7 @@ def _process_one(audio_path: str) -> tuple[str, str | None, str | None]:
 
         # 5. Resample to target rate (HQ)
         if src_sr != _worker_sample_rate:
-            audio_rs = soxr.resample(
-                trimmed, src_sr, _worker_sample_rate, quality="HQ"
-            )
+            audio_rs = soxr.resample(trimmed, src_sr, _worker_sample_rate, quality="HQ")
         else:
             audio_rs = trimmed
 
@@ -197,9 +195,7 @@ def main() -> None:
                 assert norm_path is not None
                 norm_map[audio_path] = norm_path
 
-    logger.info(
-        "Done: %d succeeded, %d failed", len(norm_map), fail_count
-    )
+    logger.info("Done: %d succeeded, %d failed", len(norm_map), fail_count)
 
     # --- 3. Update dataset.jsonl with paths ---------------------------------
     logger.info("Updating %s ...", dataset_path)

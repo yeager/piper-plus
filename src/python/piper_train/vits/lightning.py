@@ -711,9 +711,7 @@ class VitsModel(pl.LightningModule):
             return
         for utt_idx, test_utt in enumerate(self._test_dataset):
             text = test_utt.phoneme_ids.unsqueeze(0).to(self.device)
-            text_lengths = torch.LongTensor([len(test_utt.phoneme_ids)]).to(
-                self.device
-            )
+            text_lengths = torch.LongTensor([len(test_utt.phoneme_ids)]).to(self.device)
             sid = (
                 test_utt.speaker_id.to(self.device)
                 if test_utt.speaker_id is not None
@@ -721,9 +719,7 @@ class VitsModel(pl.LightningModule):
             )
             spk_emb = None
             if self.hparams.use_zero_shot:
-                spk_emb = torch.zeros(
-                    1, self.hparams.spk_embed_dim, device=self.device
-                )
+                spk_emb = torch.zeros(1, self.hparams.spk_embed_dim, device=self.device)
             with torch.no_grad():
                 test_audio, *_ = self.model_g.infer(
                     text,

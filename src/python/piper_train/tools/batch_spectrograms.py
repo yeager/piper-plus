@@ -97,11 +97,15 @@ def _batch_spectrogram_gpu(
     padded = []
     lengths = []
     for audio in audios:
-        p = torch.nn.functional.pad(
-            audio.unsqueeze(0).unsqueeze(0),  # (1, 1, samples)
-            (PAD_SIZE, PAD_SIZE),
-            mode="reflect",
-        ).squeeze(0).squeeze(0)  # (padded_samples,)
+        p = (
+            torch.nn.functional.pad(
+                audio.unsqueeze(0).unsqueeze(0),  # (1, 1, samples)
+                (PAD_SIZE, PAD_SIZE),
+                mode="reflect",
+            )
+            .squeeze(0)
+            .squeeze(0)
+        )  # (padded_samples,)
         padded.append(p)
         lengths.append(p.shape[0])
 
@@ -126,9 +130,7 @@ def _batch_spectrogram_gpu(
         return_complex=True,
     )
     # Magnitude: (batch, freq_bins, time_frames)
-    spec_mag = torch.sqrt(
-        torch.view_as_real(spec_complex).pow(2).sum(-1) + 1e-6
-    ).cpu()
+    spec_mag = torch.sqrt(torch.view_as_real(spec_complex).pow(2).sum(-1) + 1e-6).cpu()
 
     # Trim each result to correct frame count
     results = []
@@ -151,7 +153,12 @@ def run(
         logger.info("No pending files found -- nothing to do.")
         return
 
-    logger.info("Found %d files to process (batch=%d, device=%s).", len(pending), batch_size, device)
+    logger.info(
+        "Found %d files to process (batch=%d, device=%s).",
+        len(pending),
+        batch_size,
+        device,
+    )
 
     dev = torch.device(device)
     hann_window = torch.hann_window(WIN_SIZE, device=dev)
@@ -184,7 +191,11 @@ def run(
             specs = _batch_spectrogram_gpu(list(audios), dev, hann_window)
         except torch.cuda.OutOfMemoryError:
             torch.cuda.empty_cache()
-            logger.warning("OOM on batch starting at %s, skipping %d files.", batch_paths[0], len(valid))
+            logger.warning(
+                "OOM on batch starting at %s, skipping %d files.",
+                batch_paths[0],
+                len(valid),
+            )
             skipped += len(valid)
             pbar.update(len(batch_paths))
             continue
@@ -207,19 +218,27 @@ def main() -> None:
         description="GPU batch spectrogram computation for cached .pt audio files."
     )
     parser.add_argument(
-        "--cache-dir", type=Path, required=True,
+        "--cache-dir",
+        type=Path,
+        required=True,
         help="Directory containing normalised .pt files.",
     )
     parser.add_argument(
-        "--batch-size", type=int, default=128,
+        "--batch-size",
+        type=int,
+        default=128,
         help="Files per GPU batch (default: 128).",
     )
     parser.add_argument(
-        "--device", type=str, default="cuda:0",
+        "--device",
+        type=str,
+        default="cuda:0",
         help="Torch device (default: cuda:0).",
     )
     parser.add_argument(
-        "--io-workers", type=int, default=8,
+        "--io-workers",
+        type=int,
+        default=8,
         help="I/O thread pool size (default: 8).",
     )
     args = parser.parse_args()

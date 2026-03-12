@@ -834,9 +834,7 @@ class SynthesizerTrn(nn.Module):
         if use_zero_shot:
             self.spk_proj = nn.Linear(spk_embed_dim, gin_channels)
             # Learnable scale factor to match emb_g norm (~sqrt(gin_channels))
-            self.spk_scale = nn.Parameter(
-                torch.tensor(float(gin_channels) ** 0.5)
-            )
+            self.spk_scale = nn.Parameter(torch.tensor(float(gin_channels) ** 0.5))
 
     def _get_speaker_condition(self, sid, speaker_embedding):
         """Compute speaker conditioning vector g from sid or speaker_embedding."""
