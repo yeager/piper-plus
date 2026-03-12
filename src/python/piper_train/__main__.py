@@ -211,6 +211,11 @@ def main():
         action="store_true",
         help="Disable WavLM Discriminator (faster training, recommended for pre-training)",
     )
+    parser.add_argument(
+        "--no-compile",
+        action="store_true",
+        help="Disable torch.compile (recommended for T4/older GPUs where compile overhead exceeds benefit)",
+    )
     # Trainer arguments
     parser.add_argument("--accelerator", default="gpu", help="Accelerator to use")
     parser.add_argument("--devices", type=int, default=1, help="Number of devices")
@@ -466,10 +471,18 @@ def main():
     if num_speakers > 1 and dict_args.get("gin_channels", 0) <= 0:
         dict_args["gin_channels"] = 512
 
-    # num_workers自動調整機能を削除
-    # ユーザー指定のnum_workersをそのまま使用する
-    # 大規模マルチスピーカーモデルでは共有メモリ制約のため、
-    # ユーザーが適切な値を設定する必要がある
+    # Multi-GPU: warn if total worker count is high (DDP multiplies workers per GPU)
+    total_workers = getattr(args, "num_workers", 0) * num_gpus
+    if total_workers > 16:
+        _LOGGER.warning(
+            "High total DataLoader worker count: %d workers × %d GPUs = %d processes. "
+            "This can cause CPU RAM OOM with persistent_workers=True. "
+            "Consider --num-workers %d or --no-pin-memory for multi-GPU setups.",
+            args.num_workers,
+            num_gpus,
+            total_workers,
+            max(1, 4 // num_gpus),
+        )
 
     model = VitsModel(
         num_symbols=num_symbols,

@@ -248,63 +248,57 @@ OpenJTalkから抽出されるA1/A2/A3値をDuration Predictorの入力として
 
 ## 学習設定
 
-### 推奨設定 (20話者、RTX 6000 Ada 48GB × 1、事前学習用)
+### 推奨設定 (20話者、T4 15GB × 4、Zero-Shot事前学習用) ✅ 最新
 
 ```bash
+NCCL_DEBUG=WARN NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1 \
 uv run python -m piper_train \
-  --dataset-dir /home/shadeform/data/piper/dataset-moe-speech-20speakers \
+  --dataset-dir /data/piper/dataset-zero-shot-20speakers \
   --prosody-dim 16 \
-  --accelerator gpu --devices 1 \
-  --precision bf16-mixed \
-  --max_epochs 200 \
-  --batch-size 160 \
-  --samples-per-speaker 8 \
-  --checkpoint-epochs 2 \
-  --quality medium \
-  --base_lr 2e-4 \
-  --ema-decay 0.9995 \
-  --num-workers 8 \
-  --no-wavlm \
-  --default_root_dir /home/shadeform/data/piper/output-moe-speech-20speakers
+  --accelerator gpu --devices 4 --precision 16-mixed \
+  --max_epochs 200 --batch-size 20 --samples-per-speaker 4 \
+  --checkpoint-epochs 2 --quality medium \
+  --base_lr 2e-4 --disable_auto_lr_scaling \
+  --ema-decay 0.9995 --num-workers 4 --no-pin-memory \
+  --no-wavlm --no-compile \
+  --max-spec-length 500 \
+  --default_root_dir /data/piper/output-zero-shot-20speakers
 ```
+
+**T4 × 4 メモリ対策:**
+- `--num-workers 4`: DDP × 4GPU = 16ワーカー (val用は自動で2に制限)
+- `--no-pin-memory`: ロックRAM使用を回避
+- `--no-compile`: T4ではtorch.compileのオーバーヘッドが大きい
+- `--batch-size 20`: T4の15GB VRAMに安全に収まるサイズ
+- `--max-spec-length 500`: 長すぎる発話を除外してOOM防止
 
 注: `--zero-shot` フラグは不要（マルチスピーカーなら自動有効化）
 
-### V100 → RTX 6000 Ada 移行時の変更点
+### GPU別の推奨設定
 
-| パラメータ | V100 (16GB × 4) | RTX 6000 Ada (48GB × 1) | 理由 |
+| パラメータ | T4 (15GB × 4) | V100 (16GB × 4) | RTX 6000 Ada (48GB × 1) |
 |---|---|---|---|
-| `--devices` | 4 | **1** | シングルGPU |
-| `--precision` | `16-mixed` | **`bf16-mixed`** | Ada LovelaceはBF16ネイティブ対応 |
-| `--batch-size` | 12 | **160** | 48GB VRAMで大幅増加可能 |
-| `--samples-per-speaker` | 2 | **8** | メモリ余裕でDuration Predictor安定化 |
-| `--num-workers` | 0 | **8** | シングルGPU＋12コアCPUで効率化 |
+| `--devices` | **4** | 4 | 1 |
+| `--precision` | **`16-mixed`** | `16-mixed` | `bf16-mixed` |
+| `--batch-size` | **20** | 12 | 160 |
+| `--samples-per-speaker` | **4** | 2 | 8 |
+| `--num-workers` | **4** | 0 | 8 |
+| `--no-pin-memory` | **必須** | 必須 | 不要 |
+| `--no-compile` | **推奨** | 推奨 | 不要 |
+
+**DDP multi-GPU メモリ注意事項:**
+- total workers = `--num-workers` × `--devices` (persistent_workers=True)
+- 4GPU時に `--num-workers 12` = 48ワーカー → OOM危険
+- 4GPU時は `--num-workers 2-4 --no-pin-memory` を推奨
 
 ### 話者数別の推奨設定
 
 | 話者数 | batch_size | samples_per_speaker | 実効バッチ | 備考 |
 |-------|------------|---------------------|-----------|------|
 | 5話者 | 20 | 4 | 20 | ✅ 検証済み |
-| **20話者** | **160** | **8** | **160** | RTX 6000 Ada推奨 |
+| **20話者 (T4×4)** | **20** | **4** | **80** | Zero-Shot推奨 |
+| **20話者 (Ada×1)** | **160** | **8** | **160** | RTX 6000 Ada推奨 |
 | 20話者 (旧) | 32 | 4 | 32 | WavLMあり |
-
-<details>
-<summary>V100/L4マルチGPU向け設定（参考）</summary>
-
-```bash
-NCCL_DEBUG=WARN NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1 \
-uv run python -m piper_train \
-  --dataset-dir /home/shadeform/data/piper/dataset-moe-speech-20speakers-v2 \
-  --prosody-dim 16 \
-  --accelerator gpu --devices 4 --precision 16-mixed \
-  --max_epochs 200 --batch-size 12 --samples-per-speaker 2 \
-  --checkpoint-epochs 1 --quality medium \
-  --base_lr 2e-4 --disable_auto_lr_scaling \
-  --ema-decay 0.9995 --num-workers 0 --no-pin-memory \
-  --default_root_dir /home/shadeform/data/piper/output-moe-speech-20speakers-wavlm
-```
-
-</details>
 
 ---
 
@@ -417,11 +411,22 @@ cat test.jsonl | CUDA_VISIBLE_DEVICES="" uv run python -m piper_train.infer_onnx
 
 **対処法**: gin_channels=512を使用（デフォルト）
 
-### GPUメモリ不足 (OOM)
+### GPUメモリ不足 (GPU OOM)
 
 **対処法**:
 1. `batch_size` と `samples_per_speaker` を下げる
 2. 異なるバッチサイズからのリジュームを避ける
+
+### システムRAM不足でインスタンス再起動 (CPU OOM)
+
+**原因**: DDP multi-GPUでDataLoaderワーカーが増殖
+- total workers = `num_workers` × `devices` × 2 (train + val)
+- `persistent_workers=True` でワーカーが常駐
+- `pin_memory=True` でロックされたRAMが増大
+
+**対処法**:
+1. `--num-workers 2-4 --no-pin-memory` を使用
+2. val_dataloaderは自動でworkers数を制限 (max 2)
 
 ### Zero-shot推論でエラーが出る
 

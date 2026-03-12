@@ -196,6 +196,12 @@ class VitsModel(pl.LightningModule):
         if self._compiled:
             return
 
+        # --no-compile flag disables torch.compile entirely
+        if self.hparams.get("no_compile", False):
+            _LOGGER.info("torch.compile disabled by --no-compile flag (eager mode)")
+            self._compiled = True
+            return
+
         if not hasattr(torch, "compile"):
             _LOGGER.info(
                 "torch.compile not available (PyTorch < 2.0), using eager mode"
@@ -364,6 +370,10 @@ class VitsModel(pl.LightningModule):
     def val_dataloader(self):
         # Check if pin_memory should be disabled (for memory-constrained multi-GPU setups)
         pin_memory = not getattr(self.hparams, "no_pin_memory", False)
+        # Validation uses fewer workers than training to reduce memory pressure.
+        # With DDP (4 GPUs), train workers are already persistent, so val workers
+        # add significant memory overhead. Cap at 2 workers per process.
+        val_workers = min(self.hparams.num_workers, 2)
         return DataLoader(
             self._val_dataset,
             collate_fn=UtteranceCollate(
@@ -371,13 +381,11 @@ class VitsModel(pl.LightningModule):
                 or self.hparams.use_zero_shot,
                 segment_size=self.hparams.segment_size,
             ),
-            num_workers=self.hparams.num_workers,
+            num_workers=val_workers,
             batch_size=self.hparams.batch_size,
             pin_memory=pin_memory,
-            persistent_workers=(
-                True if self.hparams.num_workers > 0 else False
-            ),  # Multi-GPU optimization
-            prefetch_factor=(2 if self.hparams.num_workers > 0 else None),
+            persistent_workers=False,  # Don't keep val workers alive between epochs
+            prefetch_factor=(2 if val_workers > 0 else None),
         )
 
     def test_dataloader(self):
@@ -797,7 +805,9 @@ class VitsModel(pl.LightningModule):
         parser.add_argument(
             "--num-workers",
             type=int,
-            default=min(16, os.cpu_count()),
-            help="Number of workers for DataLoader",
+            default=4,
+            help="Number of workers for DataLoader (default: 4). "
+            "With multi-GPU DDP, total workers = num_workers × num_GPUs. "
+            "For 4-GPU setups, use 2-4 to avoid CPU RAM OOM.",
         )
         return parent_parser
