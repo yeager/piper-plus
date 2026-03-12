@@ -34,6 +34,9 @@ Piper Plus documentation. Guides and references for using and developing with Pi
 ## API Reference
 - [Phoneme Mapping](api-reference/phoneme-mapping.md) - Phoneme reference for all languages
 
+## Roadmap
+- [Roadmap](roadmap.md) - Future development roadmap (Phase 1-4, technical deep-dives, OSS comparison)
+
 ## Development
 - [Contributing](/CONTRIBUTING.md) - Contribution guidelines
 - [Changelog](/CHANGELOG.md) - Version history
