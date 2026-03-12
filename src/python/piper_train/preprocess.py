@@ -42,6 +42,9 @@ except ImportError:
 
 from .f0_extraction import cache_f0
 from .norm_audio import cache_norm_audio, cache_norm_audio_fast, make_silence_detector
+from .norm_audio.vad import (
+    SileroVoiceActivityDetector,  # noqa: F401 (used in type annotation)
+)
 
 
 # Custom Japanese phonemizer

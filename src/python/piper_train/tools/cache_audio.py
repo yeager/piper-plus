@@ -22,12 +22,12 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import soundfile as sf
 import torch
 from tqdm import tqdm
 
 from piper_train.norm_audio import _atomic_torch_save, energy_vad_numpy
+
 
 logger = logging.getLogger(__name__)
 

@@ -24,6 +24,7 @@ from pathlib import Path
 import torch
 from tqdm import tqdm
 
+
 logger = logging.getLogger(__name__)
 
 # ---------- constants ----------
@@ -176,7 +177,7 @@ def run(
             pbar.update(len(batch_paths))
             continue
 
-        paths, audios = zip(*valid)
+        paths, audios = zip(*valid, strict=False)
 
         # GPU batch STFT
         try:
@@ -189,7 +190,7 @@ def run(
             continue
 
         # Parallel I/O: save .spec.pt files
-        save_args = list(zip(paths, specs))
+        save_args = list(zip(paths, specs, strict=False))
         with ThreadPoolExecutor(max_workers=io_workers) as io_pool:
             list(io_pool.map(_save_spec, save_args))
 
