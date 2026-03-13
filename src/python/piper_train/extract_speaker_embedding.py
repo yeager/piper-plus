@@ -62,15 +62,21 @@ def preprocess_audio(wav_path: str | Path, target_sr: int = 16000) -> np.ndarray
     Returns:
         fbank: np.ndarray, shape [T, 80], float32
     """
-    waveform, sr = torchaudio.load(str(wav_path))
+    import soundfile as sf  # noqa: PLC0415
+
+    audio_data, sr = sf.read(str(wav_path), dtype="float32", always_2d=False)
 
     # ステレオ → モノラル
-    if waveform.shape[0] > 1:
-        waveform = waveform.mean(dim=0, keepdim=True)
+    if audio_data.ndim > 1:
+        audio_data = audio_data.mean(axis=1)
 
-    # リサンプリング (キャッシュ済みResampler使用)
+    # リサンプリング
     if sr != target_sr:
-        waveform = _get_resampler(sr, target_sr)(waveform)
+        import soxr  # noqa: PLC0415
+
+        audio_data = soxr.resample(audio_data, sr, target_sr, quality="HQ")
+
+    waveform = torch.from_numpy(audio_data).unsqueeze(0)  # [1, T]
 
     # 80-dim Fbank (kaldi互換)
     fbank = torchaudio.compliance.kaldi.fbank(

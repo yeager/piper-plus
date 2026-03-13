@@ -98,8 +98,14 @@ def main():
         help="Language for --text mode (default: ja)",
     )
     parser.add_argument(
-        "--speaker-embedding",
-        help="Path to speaker embedding .npy file (for zero-shot models)",
+        "--speaker-audio",
+        help="Path to reference audio file for zero-shot TTS. "
+        "Automatically extracts speaker embedding using CAM++ encoder. "
+        "Requires --speaker-encoder.",
+    )
+    parser.add_argument(
+        "--speaker-encoder",
+        help="Path to CAM++ ONNX speaker encoder model (required with --speaker-audio)",
     )
     parser.add_argument(
         "--speaker-id",
@@ -143,15 +149,50 @@ def main():
     has_speaker_embedding = "speaker_embedding" in input_names
     if has_speaker_embedding:
         _LOGGER.info("Model supports zero-shot TTS (speaker_embedding input)")
-    if has_speaker_embedding and args.speaker_embedding is None:
+
+    # --speaker-audio: extract embedding automatically using CAM++
+    if args.speaker_audio:
+        if not args.speaker_encoder:
+            _LOGGER.error("--speaker-encoder is required with --speaker-audio")
+            sys.exit(1)
+        if not Path(args.speaker_audio).exists():
+            _LOGGER.error("Speaker audio file not found: %s", args.speaker_audio)
+            sys.exit(1)
+        if not Path(args.speaker_encoder).exists():
+            _LOGGER.error("Speaker encoder not found: %s", args.speaker_encoder)
+            sys.exit(1)
+
+        from .extract_speaker_embedding import (  # noqa: PLC0415
+            extract_embedding,
+            preprocess_audio,
+        )
+
+        _LOGGER.info("Extracting speaker embedding from %s", args.speaker_audio)
+        encoder_session = onnxruntime.InferenceSession(
+            str(args.speaker_encoder),
+            sess_options=onnxruntime.SessionOptions(),
+            providers=["CPUExecutionProvider"],
+        )
+        fbank = preprocess_audio(args.speaker_audio)
+        _speaker_embedding = extract_embedding(encoder_session, fbank)
+        _LOGGER.info(
+            "Extracted speaker embedding: shape=%s, norm=%.4f",
+            _speaker_embedding.shape,
+            np.linalg.norm(_speaker_embedding),
+        )
+    else:
+        _speaker_embedding = None
+
+    if has_speaker_embedding and _speaker_embedding is None:
         _LOGGER.error(
-            "Zero-shot model requires --speaker-embedding. "
-            "Provide a .npy file with a 192-dim speaker embedding."
+            "Zero-shot model requires --speaker-audio and --speaker-encoder. "
+            "Provide a reference audio file and a CAM++ ONNX speaker encoder."
         )
         sys.exit(1)
     if has_speaker_embedding and args.speaker_id is not None:
         _LOGGER.warning(
-            "--speaker-id is ignored for zero-shot models (using --speaker-embedding instead)"
+            "--speaker-id is ignored for zero-shot models "
+            "(using speaker embedding instead)"
         )
 
     # Handle --text mode: convert text to phoneme_ids and prosody_features
@@ -237,10 +278,8 @@ def main():
         }
 
         # speaker_embedding の処理 (zero-shot model)
-        if has_speaker_embedding and args.speaker_embedding:
-            spk_emb = np.load(args.speaker_embedding, allow_pickle=False).astype(
-                np.float32
-            )
+        if has_speaker_embedding and _speaker_embedding is not None:
+            spk_emb = _speaker_embedding.astype(np.float32)
             if spk_emb.ndim == 1:
                 spk_emb = spk_emb.reshape(1, -1)
             inputs["speaker_embedding"] = spk_emb
