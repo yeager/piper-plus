@@ -409,6 +409,8 @@ cp /path/to/training_dir/config.json \
    /path/to/model.onnx.json
 ```
 
+The exported model uses FP16 (half-precision) by default, which reduces model size by roughly 50% with no meaningful quality loss. Use `--no-fp16` if you need a full FP32 model.
+
 #### Export options
 
 | Flag | Default | Description |
@@ -416,6 +418,7 @@ cp /path/to/training_dir/config.json \
 | `--stochastic` | off | Enable noise_scale sampling in the exported graph. **Recommended for WavLM-trained models.** |
 | `--use-ema` | on | Apply EMA weights to the decoder in the exported model. |
 | `--no-ema` | - | Disable EMA weight application. |
+| `--no-fp16` | - | Disable FP16 conversion and export a full FP32 model. |
 
 Example for a WavLM-trained model:
 

@@ -276,6 +276,7 @@ python -m piper_train \
 - V100/A100/L4のTensor Coreで最大8倍スループット向上
 - VITS実装では損失計算がFP32で維持され、品質低下なし
 - OOM問題の軽減
+- ONNX変換もデフォルトでFP16出力（モデルサイズ約50%削減）。FP32が必要な場合は `--no-fp16` を指定
 
 ### Gradient Accumulation
 
@@ -332,12 +333,18 @@ python -m piper_train --dataset-dir /path/to/dataset --devices 2 --strategy ddp 
 2. **ONNX変換時のCUDAデバイスエラー**
    マルチGPU学習で作成されたチェックポイントをONNX変換する際、デバイス不一致エラーが発生する場合:
    ```bash
-   # CUDAを無効化してCPUで変換
+   # CUDAを無効化してCPUで変換（デフォルトでFP16出力）
    CUDA_VISIBLE_DEVICES="" python3 -m piper_train.export_onnx \
      /path/to/checkpoint.ckpt \
      /path/to/output.onnx
+
+   # FP32で出力する場合
+   CUDA_VISIBLE_DEVICES="" python3 -m piper_train.export_onnx \
+     --no-fp16 \
+     /path/to/checkpoint.ckpt \
+     /path/to/output.onnx
    ```
-   
+
    **原因**: マルチGPU学習のチェックポイントには複数のGPU情報が含まれ、ONNX変換時にデバイス混在が発生
 
 3. **DataLoader関連エラー**
