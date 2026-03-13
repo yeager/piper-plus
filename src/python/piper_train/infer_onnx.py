@@ -105,7 +105,8 @@ def main():
     )
     parser.add_argument(
         "--speaker-encoder",
-        help="Path to CAM++ ONNX speaker encoder model (required with --speaker-audio)",
+        help="Path to CAM++ ONNX speaker encoder model. "
+        "If not specified, searches for campplus.onnx next to the model file.",
     )
     parser.add_argument(
         "--speaker-id",
@@ -152,12 +153,30 @@ def main():
 
     # --speaker-audio: extract embedding automatically using CAM++
     if args.speaker_audio:
-        if not args.speaker_encoder:
-            _LOGGER.error("--speaker-encoder is required with --speaker-audio")
-            sys.exit(1)
         if not Path(args.speaker_audio).exists():
             _LOGGER.error("Speaker audio file not found: %s", args.speaker_audio)
             sys.exit(1)
+
+        # Auto-detect speaker encoder if not specified
+        if not args.speaker_encoder:
+            model_dir = Path(args.model).parent
+            candidates = [
+                model_dir / "campplus.onnx",
+                model_dir.parent / "campplus.onnx",
+                model_dir.parent / "models" / "campplus.onnx",
+            ]
+            for candidate in candidates:
+                if candidate.exists():
+                    args.speaker_encoder = str(candidate)
+                    _LOGGER.info("Auto-detected speaker encoder: %s", candidate)
+                    break
+            if not args.speaker_encoder:
+                _LOGGER.error(
+                    "Speaker encoder not found. Place campplus.onnx next to the model "
+                    "or specify --speaker-encoder explicitly."
+                )
+                sys.exit(1)
+
         if not Path(args.speaker_encoder).exists():
             _LOGGER.error("Speaker encoder not found: %s", args.speaker_encoder)
             sys.exit(1)
