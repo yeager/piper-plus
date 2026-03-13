@@ -116,14 +116,6 @@ class VitsModel(pl.LightningModule):
         # Discriminator update interval (D:G = 1:d_update_interval)
         self.d_update_interval = self.hparams.get("d_update_interval", 1)
 
-        # Cache for discriminator real-side outputs (shared between G and D steps)
-        # These are set in training_step_g and reused in training_step_d to avoid
-        # redundant forward passes on real audio through the discriminator.
-        self._cached_y_d_hat_r: list | None = None
-        self._cached_fmap_r: list | None = None
-        self._cached_y_d_hat_r_wlm: list | None = None
-        self._cached_fmap_r_wlm: list | None = None
-
         # DINO center buffer for zero-shot training
         if use_zero_shot:
             self.register_buffer("dino_center", torch.zeros(gin_channels))
@@ -430,12 +422,6 @@ class VitsModel(pl.LightningModule):
                 self.d_update_interval,
             )
 
-        # Clear discriminator output cache after both G and D steps
-        self._cached_y_d_hat_r = None
-        self._cached_fmap_r = None
-        self._cached_y_d_hat_r_wlm = None
-        self._cached_fmap_r_wlm = None
-
         # Periodic memory cleanup (infrequent — GPU utilization is stable)
         if batch_idx % MEMORY_CLEANUP_FREQUENCY == 0:
             if torch.cuda.is_available():
@@ -549,16 +535,6 @@ class VitsModel(pl.LightningModule):
 
         y_d_hat_r, y_d_hat_g, fmap_r, fmap_g = self.model_d(y, y_hat)
 
-        # Cache real-side discriminator outputs for reuse in training_step_d.
-        # D parameters are not updated between G and D steps within the same
-        # training_step, so the real-side outputs are identical and safe to reuse.
-        # NOTE: Currently MPD.forward() computes real and fake together, so both
-        # sides are computed here. To fully eliminate redundant real-side computation,
-        # MPD/WavLMDiscriminator need a forward_single(x) method that processes
-        # only one input. That refactor is tracked separately.
-        self._cached_y_d_hat_r = [t.detach() for t in y_d_hat_r]
-        self._cached_fmap_r = [[t.detach() for t in fm] for fm in fmap_r]
-
         with autocast(self.device.type, enabled=False):
             # Generator loss
             loss_dur = torch.sum(l_length.float())
@@ -575,12 +551,6 @@ class VitsModel(pl.LightningModule):
                 y_d_hat_r_wlm, y_d_hat_g_wlm, fmap_r_wlm, fmap_g_wlm = (
                     self.model_d_wavlm(y, y_hat)
                 )
-
-                # Cache WavLM real-side outputs
-                self._cached_y_d_hat_r_wlm = [t.detach() for t in y_d_hat_r_wlm]
-                self._cached_fmap_r_wlm = [
-                    [t.detach() for t in fm] for fm in fmap_r_wlm
-                ]
 
                 loss_fm_wavlm = feature_loss(fmap_r_wlm, fmap_g_wlm)
                 loss_gen_wavlm, _ = generator_loss(y_d_hat_g_wlm)
@@ -656,19 +626,12 @@ class VitsModel(pl.LightningModule):
         # Ensure detached tensors are contiguous
         y_hat_detached = y_hat.detach().contiguous()
 
-        # Reuse cached real-side outputs from training_step_g when available.
-        # D parameters have not changed since G step, so real-side outputs are
-        # identical. We still need the fake-side recomputed with detached y_hat.
-        # NOTE: Until MPD exposes a forward_single() method, we must call the
-        # full forward and discard the redundant real-side outputs. The cached
-        # values are used for the discriminator loss to maintain consistency.
-        if self._cached_y_d_hat_r is not None:
-            # Full forward still needed for fake-side (y_hat is detached now)
-            _, y_d_hat_g, _, _ = self.model_d(y, y_hat_detached)
-            y_d_hat_r = self._cached_y_d_hat_r
-        else:
-            # Fallback: no cache (e.g., called from validation_step)
-            y_d_hat_r, y_d_hat_g, _, _ = self.model_d(y, y_hat_detached)
+        # Full discriminator forward with detached fake audio.
+        # NOTE: We must use fresh (non-detached) real-side outputs here so that
+        # gradients flow back through D for the real-side LSGAN loss term
+        # mean((1 - D(real))^2). Using detached/cached real-side outputs would
+        # zero out these gradients and prevent D from learning.
+        y_d_hat_r, y_d_hat_g, _, _ = self.model_d(y, y_hat_detached)
 
         with autocast(self.device.type, enabled=False):
             # Discriminator
@@ -679,13 +642,9 @@ class VitsModel(pl.LightningModule):
 
             # WavLM Discriminator loss (optional)
             if self.model_d_wavlm is not None:
-                if self._cached_y_d_hat_r_wlm is not None:
-                    _, y_d_hat_g_wlm, _, _ = self.model_d_wavlm(y, y_hat_detached)
-                    y_d_hat_r_wlm = self._cached_y_d_hat_r_wlm
-                else:
-                    y_d_hat_r_wlm, y_d_hat_g_wlm, _, _ = self.model_d_wavlm(
-                        y, y_hat_detached
-                    )
+                y_d_hat_r_wlm, y_d_hat_g_wlm, _, _ = self.model_d_wavlm(
+                    y, y_hat_detached
+                )
                 loss_disc_wavlm, _, _ = discriminator_loss(y_d_hat_r_wlm, y_d_hat_g_wlm)
                 loss_disc_all = loss_disc_all + loss_disc_wavlm * self.hparams.c_wavlm
 
