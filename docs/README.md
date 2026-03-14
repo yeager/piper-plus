@@ -38,6 +38,7 @@ Piper Plus documentation. Guides and references for using and developing with Pi
 - [拡張機能調査・参考文献](research/extended-features-research.md) - VITS系OSS横断分析、論文・OSSリスト
 - [ONNX量子化最適化](research/onnx-quantization-optimization.md) - INT8/FP16量子化の調査
 - [ボコーダ置換リサーチ](research/vocoder-replacement-research.md) - HiFi-GAN代替の比較検証
+- [VITS2アーキテクチャ移行調査 & TTS最新動向](research/vits2-architecture-research.md) - VITS→VITS2移行分析、2024-2026年TTS動向
 
 ## API Reference
 - [Phoneme Mapping](api-reference/phoneme-mapping.md) - Phoneme reference for all languages
