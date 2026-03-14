@@ -13,14 +13,21 @@ Comprehensive guides for various aspects of piper-plus.
 - [Japanese Usage Guide](japanese/japanese-usage.md) - Comprehensive Japanese TTS guide
 
 ### [Optimization](optimization/)
-- [ARM64 Optimization](optimization/arm64-optimization.md) - NEON optimizations
+- [Apple Silicon Optimization](optimization/apple-silicon-optimization.md) - M1-M4 optimization guide
+
+### [Integration](integration/)
+- [Stack-chan Integration](integration/stack-chan.md) - Stack-chan validation guide
 
 ### [Testing](testing/)
 - [Multilingual Testing](testing/multilingual-testing.md) - Testing infrastructure
+
+## Research Documents
+
+調査・リサーチ資料は [research/](../research/) に分離しています。
 
 ## Quick Navigation
 
 - **New to training?** Start with [Training Guide](training/training-guide.md)
 - **Multi-GPU?** See [Multi-GPU Training](training/multi-gpu-training.md)
 - **Japanese TTS?** See [Japanese Usage](japanese/japanese-usage.md)
-- **ARM devices?** Check [ARM64 Optimization](optimization/arm64-optimization.md)
+- **Apple Silicon?** Check [Apple Silicon Optimization](optimization/apple-silicon-optimization.md)

@@ -307,60 +307,6 @@ If issues persist:
 | "Library not loaded" (macOS) | Missing dylib | Set DYLD_LIBRARY_PATH |
 | "UnicodeEncodeError" (Windows) | Console encoding | Use chcp 65001 |
 
-## Training Troubleshooting
+## 学習関連のトラブルシューティング
 
-### Duration Predictor Collapse (Audio Becomes a Beep/Tone)
-
-**Symptoms**: Inference audio is a continuous "beep" tone instead of speech. This indicates the Duration Predictor failed to learn properly.
-
-**Solutions**:
-1. Use `--samples-per-speaker` to ensure balanced batches across speakers:
-   ```bash
-   --batch-size 20 --samples-per-speaker 4  # 5 speakers x 4 samples = 20
-   ```
-2. Disable automatic learning rate scaling:
-   ```bash
-   --disable_auto_lr_scaling
-   ```
-3. Lower the learning rate:
-   ```bash
-   --base_lr 1e-4
-   ```
-
-### GPU Out of Memory (OOM)
-
-**Symptoms**: Training crashes with CUDA OOM errors.
-
-**Solutions**:
-1. Set NCCL environment variables (required for multi-GPU):
-   ```bash
-   export NCCL_DEBUG=WARN
-   export NCCL_P2P_DISABLE=1
-   export NCCL_IB_DISABLE=1
-   ```
-2. Reduce `batch_size` and `samples_per_speaker`:
-   ```bash
-   --batch-size 12 --samples-per-speaker 2
-   ```
-3. Avoid resuming training from a checkpoint that was saved with a different batch size, as this can cause memory allocation issues.
-
-### ONNX Conversion Errors
-
-**Symptoms**: Errors during `export_onnx.py`, especially on GPU machines.
-
-**Solutions**:
-1. Run ONNX conversion in CPU mode to avoid GPU-related issues:
-   ```bash
-   CUDA_VISIBLE_DEVICES="" uv run python -m piper_train.export_onnx \
-     /path/to/checkpoint.ckpt /path/to/output.onnx
-   ```
-2. For WavLM-trained models, use `--stochastic` to enable noise-scale sampling:
-   ```bash
-   CUDA_VISIBLE_DEVICES="" uv run python -m piper_train.export_onnx \
-     --stochastic /path/to/checkpoint.ckpt /path/to/output.onnx
-   ```
-3. Use `--no-ema` for baseline models without EMA weights:
-   ```bash
-   CUDA_VISIBLE_DEVICES="" uv run python -m piper_train.export_onnx \
-     --no-ema /path/to/checkpoint.ckpt /path/to/output.onnx
-   ```
+学習に関するトラブルシューティング（Duration Predictor崩壊、GPU OOM、ONNX変換エラー等）は [CLAUDE.md](../../CLAUDE.md) のトラブルシューティングセクションを参照してください。

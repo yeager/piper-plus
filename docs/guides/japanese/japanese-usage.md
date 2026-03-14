@@ -69,7 +69,7 @@
      ```
 
 2. **自作モデル**
-   - [トレーニングガイド](TRAINING.md)を参照して独自のモデルを作成できます
+   - [トレーニングガイド](../../guides/training/training-guide.md)を参照して独自のモデルを作成できます
 
 ### モデルの要件
 
@@ -247,7 +247,7 @@ echo "今日[[ ky o o ]]は良い天気ですね" | ./piper/bin/piper --model ja
 echo "[[ k o N n i ch i w a ]]、[[ g e N k i ]] ですか？" | ./piper/bin/piper --model ja_JP-test-medium.onnx -f greeting.wav
 ```
 
-詳細は[音素入力ガイド](../PHONEME_INPUT.md)を参照してください。
+音素の詳細は[音素マッピング](../../api-reference/phoneme-mapping.md)を参照してください。
 
 ### 環境変数
 

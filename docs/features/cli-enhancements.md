@@ -171,23 +171,9 @@ piper "Hello" --model model.onnx --use-cuda -f output.wav
 
 For detailed GPU configuration, see [GPU Configuration Guide](gpu-configuration.md).
 
-## Phoneme Input Support (v1.5.0+)
-
-Direct phoneme input using `[[ phonemes ]]` notation:
-```bash
-# English example
-echo "Say [[ h ə l oʊ ]] clearly" | piper --model en_US-lessac.onnx -f hello.wav
-
-# Japanese example  
-echo "名前は [[ m a i k u r u ]] です" | piper --model ja_JP-test.onnx -f name.wav
-```
-
-For detailed usage, see [Phoneme Input Guide](phoneme-input.md).
-
 ## Future Enhancements
 
 Planned features for future releases:
 - Volume normalization options
 - Audio format selection (MP3, OGG, etc.)
 - Playlist generation for batch processing
-- Integration with audio effects

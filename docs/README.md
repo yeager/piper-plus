@@ -10,9 +10,8 @@ Piper Plus documentation. Guides and references for using and developing with Pi
 ## Features
 - [CLI Enhancements](features/cli-enhancements.md) - Enhanced command-line features
 - [Custom Dictionary](features/custom_dictionary.md) - Custom dictionary for technical terms and proper nouns
-- [Phoneme Input](features/phoneme-input.md) - Direct phoneme specification guide
 - [Streaming Mode](features/streaming-mode.md) - Real-time streaming support
-- [GPU Configuration](features/gpu-configuration.md) - Multi-GPU support
+- [GPU Configuration](features/gpu-configuration.md) - GPU device selection (C++ CLI)
 - [WebUI](features/webui.md) - Browser-based interface
 
 ## Guides
@@ -26,16 +25,25 @@ Piper Plus documentation. Guides and references for using and developing with Pi
 - [Japanese Usage Guide](guides/japanese/japanese-usage.md) - Comprehensive Japanese TTS guide
 
 ### Optimization
-- [ARM64 Optimization](guides/optimization/arm64-optimization.md) - NEON optimizations
+- [Apple Silicon Optimization](guides/optimization/apple-silicon-optimization.md) - M1-M4 optimization
+
+### Integration
+- [Stack-chan](guides/integration/stack-chan.md) - Stack-chan validation guide
 
 ### Testing
 - [Multilingual Testing](guides/testing/multilingual-testing.md) - Testing infrastructure
+
+## Research
+調査・リサーチ資料:
+- [拡張機能調査・参考文献](research/extended-features-research.md) - VITS系OSS横断分析、論文・OSSリスト
+- [ONNX量子化最適化](research/onnx-quantization-optimization.md) - INT8/FP16量子化の調査
+- [ボコーダ置換リサーチ](research/vocoder-replacement-research.md) - HiFi-GAN代替の比較検証
 
 ## API Reference
 - [Phoneme Mapping](api-reference/phoneme-mapping.md) - Phoneme reference for all languages
 
 ## Roadmap
-- [Roadmap](roadmap.md) - Future development roadmap (Phase 1-4, technical deep-dives, OSS comparison)
+- [Roadmap](roadmap.md) - Future development roadmap (Phase 1-4)
 
 ## Development
 - [Contributing](/CONTRIBUTING.md) - Contribution guidelines
