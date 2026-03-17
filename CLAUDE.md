@@ -8,15 +8,17 @@ Piper TTSは高品質なニューラルテキスト音声合成システムで�
 
 **ブランチ**: `feat/zero-shot-tts`
 
-### 概要 (2026-03-10 更新)
+### 概要 (2026-03-17 更新)
 
 | 項目 | 値 |
 |------|-----|
 | データセット | `dataset-moe-speech-20speakers`（speaker embedding付き） |
 | 話者数 | 20 |
 | Speaker Encoder | CAM++ (192次元, ONNX, Apache-2.0) |
-| アーキテクチャ | Dual-Mode Speaker Conditioning (emb_g + spk_proj) |
+| アーキテクチャ | Dual-Mode Speaker Conditioning (emb_g + spk_proj MLP) |
 | gin_channels | 512 |
+| SCL | Speaker Consistency Loss（`--speaker-encoder-path` 指定時有効） |
+| DINO | 自己蒸留（EMA teacher、momentum=0.996） |
 
 ### CAM++ ONNXモデルのダウンロード
 
@@ -41,10 +43,11 @@ wget -q "https://huggingface.co/model-scope/CosyVoice-300M/resolve/main/campplus
 ```bash
 # Step 1: Per-utterance embedding抽出（学習用・推奨）
 # 各発話の音声から個別にembeddingを生成し、dataset.jsonlを自動更新
+# DataLoaderで並列CPU前処理、推論は1発話ずつ実行（ゼロパディング回避）
 uv run python -m piper_train.extract_speaker_embedding \
   --encoder /home/shadeform/data/piper/models/campplus.onnx \
   --dataset-dir /home/shadeform/data/piper/dataset-moe-speech-20speakers \
-  --per-utterance
+  --per-utterance --batch-size 64 --num-workers 12
 
 # Step 2: Per-speaker embedding抽出（推論用reference）
 # 話者ごとに複数発話の平均embeddingを生成
@@ -58,6 +61,8 @@ uv run python -m piper_train.extract_speaker_embedding \
 - 学習にはper-utterance推奨（推論時の条件と一致、zero-shot精度向上）
 - per-utteranceは `dataset.jsonl` に `speaker_embedding_path` を自動追加
 - 出力: 各発話ごとに `speaker_embeddings/{hash}.npy` (192次元, 896バイト)
+- 個別ONNX推論で正確なembeddingを保証（ゼロパディングによるembedding破損を回避）
+- DataLoaderの `batch_size` はCPU前処理（fbank抽出）の並列度を制御
 
 ### 完了済みモデル
 
@@ -92,6 +97,40 @@ WavLM Discriminator学習は150/200 epochで中断。音割れ（クリッピン
 ---
 
 ## 実装済み機能
+
+### Zero-Shot Speaker Conditioning 改善 ✅ NEW (2026-03-17)
+
+Zero-Shot TTS の話者再現精度と学習安定性を向上させる4つの改善。
+
+**1. spk_proj を 2-layer MLP に変更:**
+- 旧: `nn.Linear(192, 512)` → 新: `Linear(192,512) -> LayerNorm -> GELU -> Linear(512,512)`
+- 非線形射影によりspeaker embedding空間の表現力が向上
+
+**2. SCL (Speaker Consistency Loss) の有効化:**
+- `--speaker-encoder-path` で CAM++ ONNX モデルを指定すると有効
+- 生成音声からspeaker embeddingを抽出し、参照embeddingとのコサイン類似度で損失計算
+- CAM++ は CPU ONNX で推論（CamPPSpeakerEncoder、非nn.Module）
+- `--c-spk` で重み調整（デフォルト9.0、初期学習では1.0推奨）
+
+**3. L2正規化の除去 (`_get_speaker_condition`):**
+- MLP (LayerNorm + GELU) がスケーリングを学習するため、L2正規化が不要に
+- embedding を `spk_proj` に通した結果をそのまま使用
+
+**4. Per-utterance embedding のゼロパディング修正:**
+- 旧: バッチ内で長さを揃えるためにゼロパディング → CAM++がゼロフレームを実データとして処理し embedding が破損
+- 新: DataLoader で並列 CPU 前処理（fbank 抽出）しつつ、ONNX推論は1発話ずつ実行
+- `_collate_fbanks` がリスト形式で返し、各発話を個別推論
+
+**DINO 自己蒸留:**
+- `spk_proj_teacher` (EMA teacher、momentum=0.996) で話者埋め込み空間を正則化
+- `dino_center` バッファで教師出力のセンタリング
+- `--c-dino` で重み調整（デフォルト0.1）
+
+**実装ファイル:**
+- `src/python/piper_train/vits/models.py` — spk_proj MLP定義、L2正規化除去
+- `src/python/piper_train/vits/lightning.py` — CamPPSpeakerEncoder、SCL・DINO統合
+- `src/python/piper_train/vits/losses.py` — speaker_consistency_loss、dino_loss
+- `src/python/piper_train/extract_speaker_embedding.py` — 個別ONNX推論、_collate_fbanks
 
 ### C++/Python CLI UX改善 ✅ NEW (2026-03-16)
 
@@ -160,21 +199,28 @@ uv run python -m piper_train.tools.batch_spectrograms \
 - `src/python/piper_train/tools/cache_audio.py` — 音声正規化（Energy VAD + soxr）
 - `src/python/piper_train/tools/batch_spectrograms.py` — CPU並列スペクトログラム計算
 
-### Zero-Shot TTS (Dual-Mode Speaker Conditioning) ✅ NEW (2026-03-10)
+### Zero-Shot TTS (Dual-Mode Speaker Conditioning) ✅ (2026-03-17 更新)
 
-マルチスピーカーモデルでデフォルト有効（フラグ不要）。`emb_g` (nn.Embedding) と `spk_proj` (nn.Linear) が同一モデルに共存し、speaker ID指定とspeaker embedding指定の両方で推論可能。
+マルチスピーカーモデルでデフォルト有効（フラグ不要）。`emb_g` (nn.Embedding) と `spk_proj` (2-layer MLP) が同一モデルに共存し、speaker ID指定とspeaker embedding指定の両方で推論可能。
 
 **特徴:**
 - ONNX変換時に `--export-mode {auto, zero-shot, sid}` で推論モードを分離
 - gin_channels=512（768ではガビガビ音発生）
 - Speaker Encoder: CAM++ ONNX (27MB, 192次元, Apache-2.0)
 - Per-utterance embedding抽出で学習-推論条件を一致
+- spk_proj は 2-layer MLP (`Linear(192,512) -> LayerNorm -> GELU -> Linear(512,512)`)
+- `_get_speaker_condition` で L2正規化は不要（MLP がスケーリングを学習）
+- SCL (Speaker Consistency Loss): `--speaker-encoder-path` 指定時に有効。CAM++ ONNX (CPU) で生成音声からspeaker embeddingを抽出し、コサイン類似度で話者一貫性を評価
+- DINO 自己蒸留: EMA teacher (`spk_proj_teacher`, momentum=0.996) で話者埋め込み空間を正則化
+- CamPPSpeakerEncoder: CPU ONNX ラッパー（非nn.Module、state_dict/checkpointに含まれない）
+- spk_emb_dropout: 学習時にspeaker embeddingを確率的にドロップし emb_g も学習（デフォルト 0.5）
 
 **実装ファイル:**
-- `src/python/piper_train/vits/models.py` — Dual-mode SynthesizerTrn
-- `src/python/piper_train/vits/lightning.py` — use_zero_shot デフォルト有効
+- `src/python/piper_train/vits/models.py` — Dual-mode SynthesizerTrn, spk_proj MLP
+- `src/python/piper_train/vits/lightning.py` — CamPPSpeakerEncoder, SCL, DINO, VitsModel
+- `src/python/piper_train/vits/losses.py` — speaker_consistency_loss, dino_loss
 - `src/python/piper_train/export_onnx.py` — `--export-mode` フラグ
-- `src/python/piper_train/extract_speaker_embedding.py` — CAM++ embedding抽出
+- `src/python/piper_train/extract_speaker_embedding.py` — CAM++ embedding抽出（個別推論）
 - `src/python/piper_train/prepare_zero_shot_dataset.py` — 複数コーパス統合
 
 ### Phonemizer ABC + 言語レジストリ ✅ (2026-02-01)
@@ -262,6 +308,8 @@ uv run python -m piper_train \
   --ema-decay 0.9995 --num-workers 4 --no-pin-memory \
   --no-wavlm --no-compile \
   --max-spec-length 500 \
+  --speaker-encoder-path /data/piper/models/campplus.onnx \
+  --c-spk 1.0 \
   --default_root_dir /data/piper/output-zero-shot-20speakers
 ```
 
@@ -271,6 +319,12 @@ uv run python -m piper_train \
 - `--no-compile`: T4ではtorch.compileのオーバーヘッドが大きい
 - `--batch-size 20`: T4の15GB VRAMに安全に収まるサイズ
 - `--max-spec-length 500`: 長すぎる発話を除外してOOM防止
+
+**SCL / DINO 設定:**
+- `--speaker-encoder-path`: CAM++ ONNXモデルのパスを指定するとSCL有効化
+- `--c-spk 1.0`: SCL重み（デフォルトは9.0だが、初期学習では1.0推奨）
+- `--c-dino 0.1`: DINO自己蒸留重み（デフォルト、通常変更不要）
+- `--spk-emb-dropout 0.5`: speaker embeddingドロップ率（デフォルト、dual-mode学習用）
 
 注: `--zero-shot` フラグは不要（マルチスピーカーなら自動有効化）
 
@@ -310,6 +364,7 @@ uv run python -m piper_train \
 |------|------|
 | 学習スクリプト | `src/python/piper_train/__main__.py` |
 | VITS実装 | `src/python/piper_train/vits/` |
+| 損失関数 (SCL, DINO) | `src/python/piper_train/vits/losses.py` |
 | Phonemizer ABC | `src/python/piper_train/phonemize/base.py` |
 | 言語レジストリ | `src/python/piper_train/phonemize/registry.py` |
 | 英語音素化 | `src/python/piper_train/phonemize/english.py` |
@@ -328,7 +383,7 @@ uv run python -m piper_train \
 | **Zero-Shot 20話者** ✅最新 | `/data/piper/dataset-zero-shot-20speakers/` |
 | 20話者 (embedding付き) | `/home/shadeform/data/piper/dataset-moe-speech-20speakers/` |
 | 20話者 v2 | `/home/shadeform/data/piper/dataset-moe-speech-20speakers-v2/` |
-| CAM++ ONNXモデル | `/home/shadeform/data/piper/models/campplus.onnx` |
+| CAM++ ONNXモデル | `/data/piper/models/campplus.onnx` (新) / `/home/shadeform/data/piper/models/campplus.onnx` (旧) |
 | 20話者 v2 ONNX | `/home/shadeform/data/piper/output-moe-speech-20speakers-v2/moe-speech-20speakers-v2.onnx` |
 | つくよみちゃん | HuggingFace: `ayousanz/piper-plus-tsukuyomi-chan` |
 
@@ -376,13 +431,14 @@ CUDA_VISIBLE_DEVICES="" uv run python -m piper_train.infer_onnx \
   --text "こんにちは、今日は良い天気ですね。" \
   --speaker-id 0
 
-# Zero-shot推論（speaker embedding入力）
+# Zero-shot推論（参照音声から自動embedding抽出）
 CUDA_VISIBLE_DEVICES="" uv run python -m piper_train.infer_onnx \
   --model /path/to/zero_shot_model.onnx \
   --config /path/to/config.json \
   --output-dir /path/to/output \
   --text "こんにちは、今日は良い天気ですね。" \
-  --speaker-embedding /path/to/speaker.npy
+  --speaker-audio /path/to/reference.wav \
+  --speaker-encoder /path/to/campplus.onnx
 
 # JSONL入力
 cat test.jsonl | CUDA_VISIBLE_DEVICES="" uv run python -m piper_train.infer_onnx \
@@ -390,7 +446,10 @@ cat test.jsonl | CUDA_VISIBLE_DEVICES="" uv run python -m piper_train.infer_onnx
   --output-dir /path/to/output
 ```
 
-**speaker_embedding.npy**: 192次元float32配列。`extract_speaker_embedding.py` で生成。
+**Zero-shot推論の注意:**
+- `--speaker-audio`: 参照音声WAVファイル。CAM++で自動的にspeaker embeddingを抽出
+- `--speaker-encoder`: CAM++ ONNXモデルのパス。未指定時はモデルファイル近傍で `campplus.onnx` を自動検索
+- speaker_embedding.npy: 192次元float32配列。`extract_speaker_embedding.py` で事前生成も可能
 
 ---
 
@@ -431,9 +490,33 @@ cat test.jsonl | CUDA_VISIBLE_DEVICES="" uv run python -m piper_train.infer_onnx
 ### Zero-shot推論でエラーが出る
 
 **対処法**:
-1. `--speaker-embedding` で指定する `.npy` ファイルの存在を確認
-2. `numpy.load(path).shape` が `(192,)` であることを確認
+1. `--speaker-audio` で指定する参照WAVファイルの存在を確認
+2. `--speaker-encoder` で指定する CAM++ ONNXモデルの存在を確認（未指定時はモデル近傍で自動検索）
 3. `--export-mode zero-shot` で変換したONNXモデルを使用しているか確認
+4. 事前生成した `.npy` を使う場合は `numpy.load(path).shape` が `(192,)` であることを確認
+
+### SCLが有効にならない
+
+**原因**: `--speaker-encoder-path` が未指定または指定パスにCAM++ ONNXが存在しない
+
+**対処法**:
+1. `--speaker-encoder-path /data/piper/models/campplus.onnx` を学習コマンドに追加
+2. ファイルの存在を確認: `ls -la /data/piper/models/campplus.onnx`
+3. ログで `CamPPSpeakerEncoder loaded` が出力されていることを確認
+
+### c_spkが大きすぎてSCLが学習を支配する
+
+**原因**: `--c-spk` のデフォルト値 9.0 は高すぎる場合がある
+
+**対処法**: 初期学習では `--c-spk 1.0` から開始し、loss_spk の推移を見ながら調整
+
+### Speaker embeddingの品質が低い（話者再現精度が悪い）
+
+**原因**: Per-utterance抽出でゼロパディングが使用されている（旧バージョン）
+
+**対処法**:
+1. 最新版の `extract_speaker_embedding.py` を使用（個別ONNX推論、パディングなし）
+2. 既存の `speaker_embeddings/` ディレクトリを削除して再抽出
 
 ### ONNX変換エラー
 
