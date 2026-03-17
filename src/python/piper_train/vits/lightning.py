@@ -61,7 +61,10 @@ class CamPPSpeakerEncoder:
             else None
         )
         _LOGGER.info(
-            "CamPPSpeakerEncoder loaded: %s (CPU, %d->%d Hz)", onnx_path, source_sr, target_sr
+            "CamPPSpeakerEncoder loaded: %s (CPU, %d->%d Hz)",
+            onnx_path,
+            source_sr,
+            target_sr,
         )
 
     @torch.no_grad()
@@ -600,7 +603,9 @@ class VitsModel(pl.LightningModule):
 
         # Speaker embedding perturbation for zero-shot generalization
         if self.training and speaker_embeddings is not None:
-            speaker_embeddings = speaker_embeddings + torch.randn_like(speaker_embeddings) * 0.02
+            speaker_embeddings = (
+                speaker_embeddings + torch.randn_like(speaker_embeddings) * 0.02
+            )
 
         (
             y_hat,
@@ -661,8 +666,13 @@ class VitsModel(pl.LightningModule):
 
         with autocast(self.device.type, enabled=False):
             # KL annealing: linearly increase from 0.1 to c_kl over kl_annealing_epochs
-            if self.hparams.kl_annealing_epochs > 0 and self.current_epoch < self.hparams.kl_annealing_epochs:
-                kl_weight = self.hparams.c_kl * (0.1 + 0.9 * self.current_epoch / self.hparams.kl_annealing_epochs)
+            if (
+                self.hparams.kl_annealing_epochs > 0
+                and self.current_epoch < self.hparams.kl_annealing_epochs
+            ):
+                kl_weight = self.hparams.c_kl * (
+                    0.1 + 0.9 * self.current_epoch / self.hparams.kl_annealing_epochs
+                )
             else:
                 kl_weight = self.hparams.c_kl
 
@@ -820,7 +830,9 @@ class VitsModel(pl.LightningModule):
                 if test_utt.speaker_embedding is not None:
                     spk_emb = test_utt.speaker_embedding.unsqueeze(0).to(self.device)
                 else:
-                    spk_emb = torch.zeros(1, self.hparams.spk_embed_dim, device=self.device)
+                    spk_emb = torch.zeros(
+                        1, self.hparams.spk_embed_dim, device=self.device
+                    )
             with torch.no_grad():
                 test_audio, *_ = self.model_g.infer(
                     text,

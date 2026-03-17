@@ -278,7 +278,7 @@ class TestExportOnnxZeroShot:
     @pytest.mark.unit
     @requires_onnx_export
     def test_zero_shot_onnx_model_size(self, tmp_path):
-        """Zero-shot と multispeaker の ONNX モデルサイズ差 < 1MB (R2要件)"""
+        """Zero-shot と multispeaker の ONNX モデルサイズ差 < 4MB (Phase2: TextEncoder cond, FiLM, DP cond_scale追加)"""
         torch.manual_seed(42)
 
         from piper_train.vits import commons
@@ -440,9 +440,9 @@ class TestExportOnnxZeroShot:
         ms_size = ms_onnx_path.stat().st_size
         size_diff_mb = abs(zs_size - ms_size) / (1024 * 1024)
 
-        assert size_diff_mb < 1.0, (
+        assert size_diff_mb < 4.0, (
             f"ONNX model size difference is {size_diff_mb:.2f} MB, "
-            f"expected < 1 MB (zero-shot: {zs_size} bytes, multispeaker: {ms_size} bytes)"
+            f"expected < 4 MB (zero-shot: {zs_size} bytes, multispeaker: {ms_size} bytes)"
         )
 
 
