@@ -832,15 +832,17 @@ class SynthesizerTrn(nn.Module):
         if n_speakers > 1:
             self.emb_g = nn.Embedding(n_speakers, gin_channels)
         if use_zero_shot:
-            self.spk_proj = nn.Linear(spk_embed_dim, gin_channels)
-            # Learnable scale factor to match emb_g norm (~sqrt(gin_channels))
-            self.spk_scale = nn.Parameter(torch.tensor(float(gin_channels) ** 0.5))
+            self.spk_proj = nn.Sequential(
+                nn.Linear(spk_embed_dim, gin_channels),
+                nn.LayerNorm(gin_channels),
+                nn.GELU(),
+                nn.Linear(gin_channels, gin_channels),
+            )
 
     def _get_speaker_condition(self, sid, speaker_embedding):
         """Compute speaker conditioning vector g from sid or speaker_embedding."""
         if speaker_embedding is not None and hasattr(self, "spk_proj"):
             g = self.spk_proj(speaker_embedding)
-            g = torch.nn.functional.normalize(g, dim=-1) * self.spk_scale
             return g.unsqueeze(-1)
         elif sid is not None and hasattr(self, "emb_g"):
             return self.emb_g(sid).unsqueeze(-1)

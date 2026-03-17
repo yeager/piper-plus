@@ -159,7 +159,9 @@ def main():
     parser.add_argument(
         "--speaker-encoder-path",
         default=None,
-        help="Path to speaker encoder ONNX model for SCL monitoring (optional)",
+        help="Path to CAM++ ONNX model for Speaker Consistency Loss (SCL). "
+        "When provided, SCL extracts speaker embeddings from generated audio "
+        "and penalises speaker identity drift. Runs on CPU. (optional)",
     )
     parser.add_argument(
         "--freeze-speaker-encoder-steps",

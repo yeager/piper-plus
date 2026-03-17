@@ -52,7 +52,8 @@ class TestZeroShotInit:
         )
         assert hasattr(model, 'spk_proj')
         assert not hasattr(model, 'emb_g')
-        assert model.spk_proj.weight.shape == (768, 192)
+        # spk_proj is now nn.Sequential; first layer maps spk_embed_dim -> gin_channels
+        assert model.spk_proj[0].weight.shape == (768, 192)
 
     @pytest.mark.unit
     def test_multispeaker_creates_emb_g(self):
@@ -81,7 +82,7 @@ class TestZeroShotInit:
 
     @pytest.mark.unit
     def test_spk_proj_parameter_count(self):
-        """spk_proj のパラメータ数 = 192 * 768 + 768 = 148,224"""
+        """spk_proj is a 2-layer MLP: Linear(192,768) + LayerNorm(768) + GELU + Linear(768,768)"""
         model = SynthesizerTrn(
             **MODEL_PARAMS,
             n_speakers=1,
@@ -90,7 +91,11 @@ class TestZeroShotInit:
             spk_embed_dim=192,
         )
         param_count = sum(p.numel() for p in model.spk_proj.parameters())
-        assert param_count == 192 * 768 + 768  # weight + bias
+        # Linear(192,768): 192*768 + 768 = 148,224
+        # LayerNorm(768): 768 + 768 = 1,536
+        # Linear(768,768): 768*768 + 768 = 590,592
+        expected = (192 * 768 + 768) + (768 + 768) + (768 * 768 + 768)
+        assert param_count == expected
 
     @pytest.mark.unit
     def test_zero_shot_with_multi_speakers(self):

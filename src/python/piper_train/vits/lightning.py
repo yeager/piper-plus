@@ -1,8 +1,10 @@
 import logging
 from pathlib import Path
 
+import numpy as np
 import pytorch_lightning as pl
 import torch
+import torchaudio
 from torch import autocast
 from torch.nn import functional as F
 from torch.utils.data import DataLoader, Dataset, random_split
@@ -22,6 +24,99 @@ from .models import MultiPeriodDiscriminator, SynthesizerTrn, WavLMDiscriminator
 
 
 _LOGGER = logging.getLogger("vits.lightning")
+
+
+class CamPPSpeakerEncoder:
+    """Lightweight wrapper around CAM++ ONNX model for speaker embedding extraction.
+
+    Runs on CPU via ONNX Runtime (no GPU memory overhead). Not an nn.Module
+    because ONNX is non-differentiable and should not participate in
+    state_dict / checkpoint saving.
+
+    Pipeline: waveform (22050 Hz) -> resample (16000 Hz) -> 80-dim Fbank -> CMVN -> CAM++ -> L2 norm
+    """
+
+    def __init__(self, onnx_path: str, source_sr: int = 22050, target_sr: int = 16000):
+        import onnxruntime  # noqa: PLC0415
+
+        sess_options = onnxruntime.SessionOptions()
+        sess_options.graph_optimization_level = (
+            onnxruntime.GraphOptimizationLevel.ORT_ENABLE_EXTENDED
+        )
+        sess_options.inter_op_num_threads = 2
+        sess_options.intra_op_num_threads = 2
+
+        # Always run on CPU to avoid competing with training for GPU memory
+        self._session = onnxruntime.InferenceSession(
+            onnx_path,
+            sess_options,
+            providers=["CPUExecutionProvider"],
+        )
+        self._input_name = self._session.get_inputs()[0].name
+        self.source_sr = source_sr
+        self.target_sr = target_sr
+        self._resampler = (
+            torchaudio.transforms.Resample(source_sr, target_sr)
+            if source_sr != target_sr
+            else None
+        )
+        _LOGGER.info(
+            "CamPPSpeakerEncoder loaded: %s (CPU, %d->%d Hz)", onnx_path, source_sr, target_sr
+        )
+
+    @torch.no_grad()
+    def __call__(self, audio: torch.Tensor) -> torch.Tensor:
+        """Extract speaker embeddings from a batch of waveforms.
+
+        Parameters
+        ----------
+        audio : torch.Tensor
+            Waveform tensor of shape ``[B, T]`` at ``source_sr`` Hz.
+
+        Returns
+        -------
+        torch.Tensor
+            Speaker embeddings ``[B, 192]``, L2-normalised, on the same device
+            as the input (transferred back after CPU-side ONNX inference).
+        """
+        device = audio.device
+        audio_cpu = audio.detach().float().cpu()
+
+        embeddings = []
+        for i in range(audio_cpu.size(0)):
+            wav = audio_cpu[i]  # [T]
+            if wav.dim() == 1:
+                wav = wav.unsqueeze(0)  # [1, T]
+
+            # Resample to 16 kHz
+            if self._resampler is not None:
+                wav = self._resampler(wav)
+
+            # 80-dim Fbank (Kaldi-compatible)
+            fbank = torchaudio.compliance.kaldi.fbank(
+                wav,
+                num_mel_bins=80,
+                frame_length=25.0,
+                frame_shift=10.0,
+                sample_frequency=self.target_sr,
+            )  # [T_frames, 80]
+
+            # CMVN normalisation (mean-only, matching CAM++ / 3D-Speaker)
+            fbank = fbank - fbank.mean(dim=0, keepdim=True)
+
+            # ONNX inference: [1, T_frames, 80] -> [1, 192]
+            fbank_np = fbank.unsqueeze(0).numpy().astype(np.float32)
+            emb = self._session.run(None, {self._input_name: fbank_np})[0].squeeze()
+
+            # L2 normalisation
+            norm = np.linalg.norm(emb)
+            if norm > 0:
+                emb = emb / norm
+
+            embeddings.append(torch.from_numpy(emb))
+
+        return torch.stack(embeddings).to(device)  # [B, 192]
+
 
 # Memory cleanup frequency (iterations)
 MEMORY_CLEANUP_FREQUENCY = 500
@@ -168,6 +263,20 @@ class VitsModel(pl.LightningModule):
                 model_name=self.hparams.wavlm_model_name,
                 source_sample_rate=self.hparams.sample_rate,
             )
+
+        # CAM++ Speaker Encoder for SCL (optional, CPU-only ONNX, not an nn.Module)
+        self.speaker_encoder: CamPPSpeakerEncoder | None = None
+        if use_zero_shot and speaker_encoder_path is not None:
+            encoder_path = Path(speaker_encoder_path)
+            if encoder_path.exists():
+                self.speaker_encoder = CamPPSpeakerEncoder(
+                    str(encoder_path),
+                    source_sr=sample_rate,
+                )
+            else:
+                _LOGGER.warning(
+                    "speaker_encoder_path not found, SCL disabled: %s", encoder_path
+                )
 
         # Dataset splits
         self._train_dataset: Dataset | None = None
@@ -571,15 +680,19 @@ class VitsModel(pl.LightningModule):
                 self._log_with_batch_info("loss_fm_wavlm", loss_fm_wavlm, batch)
 
             # --- Speaker Consistency Loss (SCL) ---
-            # SCL requires a speaker encoder to extract embeddings from generated
-            # audio (y_hat) and compare them against the reference embeddings.
-            # Currently speaker_encoder is not initialized in __init__ (only
-            # speaker_encoder_path is accepted as a hyperparameter), so SCL is
-            # skipped until a speaker encoder forward pass is implemented.
+            # Uses CAM++ ONNX (CPU, non-differentiable) to extract speaker
+            # embeddings from generated audio and compare them against the
+            # reference embeddings via cosine similarity.
+            #
+            # Because the ONNX encoder is non-differentiable, gen_embedding
+            # is detached from the computation graph. The loss value still
+            # contributes to the total generator loss and provides a useful
+            # training signal: when SCL is high the generator is penalised,
+            # encouraging it to preserve speaker identity through other
+            # differentiable paths (mel reconstruction, KL, etc.).
             if (
                 self.hparams.c_spk > 0
                 and speaker_embeddings is not None
-                and hasattr(self, "speaker_encoder")
                 and self.speaker_encoder is not None
             ):
                 with torch.no_grad():

@@ -285,7 +285,7 @@ def extract_from_dataset(
 
 
 # ---------------------------------------------------------------------------
-# Per-utterance extraction with DataLoader + batch ONNX inference
+# Per-utterance extraction with DataLoader + individual ONNX inference
 # ---------------------------------------------------------------------------
 
 
@@ -293,7 +293,7 @@ class _FbankDataset(torch.utils.data.Dataset):
     """DataLoader用Dataset: PTファイルからFbank特徴量を並列抽出する。
 
     各ワーカープロセスで独立にCPU前処理（torch.load → resample → fbank）を実行し、
-    メインプロセスのGPU ONNX推論にバッチで渡す。
+    メインプロセスでONNX推論に個別に渡す（ゼロパディング回避）。
     """
 
     def __init__(
@@ -341,14 +341,18 @@ class _FbankDataset(torch.utils.data.Dataset):
 
 def _collate_fbanks(
     batch: list[tuple[int, torch.Tensor, str, bool]],
-) -> tuple[list[int], np.ndarray, list[str], list[bool]]:
-    """可変長Fbankをゼロパディングしてバッチ化する。"""
+) -> tuple[list[int], list[np.ndarray], list[str], list[bool]]:
+    """Fbank特徴量をリストのまま返す（ゼロパディングなし）。
+
+    以前はゼロパディングしてバッチテンソルを作成していたが、
+    CAM++が零埋めフレームを実データとして処理するため、
+    speaker embeddingが破損する問題があった。
+    各発話を個別にONNX推論することで正確なembeddingを保証する。
+    """
     indices, fbanks, stems, valids = zip(*batch, strict=False)
-    max_t = max(f.shape[0] for f in fbanks)
-    padded = torch.zeros(len(fbanks), max_t, 80)
-    for i, f in enumerate(fbanks):
-        padded[i, : f.shape[0], :] = f
-    return list(indices), padded.numpy().astype(np.float32), list(stems), list(valids)
+    # 各発話を個別のnumpy配列として保持（パディングしない）
+    fbank_list = [f.numpy().astype(np.float32) for f in fbanks]
+    return list(indices), fbank_list, list(stems), list(valids)
 
 
 def _write_updated_jsonl(dataset_dir: Path, entries: list[dict]) -> None:
@@ -376,9 +380,13 @@ def extract_per_utterance(
 ) -> None:
     """dataset.jsonl の各発話ごとにembeddingを抽出し、dataset.jsonlを更新する。
 
+    各発話を個別にONNX推論する（ゼロパディングによるembedding破損を回避）。
+    DataLoaderの並列CPU前処理（fbank抽出）はbatch_size単位で維持するため、
+    CPU前処理のスループットは変わらない。
+
     最適化:
     1. DataLoader (num_workers) でCPU前処理を並列化 (GIL回避)
-    2. バッチONNX推論でGPU効率を最大化
+    2. 個別ONNX推論でゼロパディングによるembedding破損を回避
     3. 既存embedding事前キャッシュでファイルI/O削減
     4. Resamplerキャッシュでフィルタ再計算を回避
 
@@ -387,7 +395,7 @@ def extract_per_utterance(
         dataset_dir: Dataset directory containing dataset.jsonl.
         output_dir: Output directory for speaker embedding .npy files.
         source_sr: Sample rate of .pt audio files in the dataset.
-        batch_size: Batch size for ONNX inference.
+        batch_size: Batch size for DataLoader CPU preprocessing.
         num_workers: Number of DataLoader workers for CPU preprocessing.
     """
     jsonl_path = dataset_dir / "dataset.jsonl"
@@ -460,7 +468,7 @@ def extract_per_utterance(
         "batch_size": batch_size,
         "num_workers": num_workers,
         "collate_fn": _collate_fbanks,
-        "pin_memory": True,
+        "pin_memory": False,  # collate returns list of numpy arrays, not tensors
     }
     if num_workers > 0:
         loader_kwargs["prefetch_factor"] = 4
@@ -478,16 +486,9 @@ def extract_per_utterance(
         num_workers,
     )
 
-    # 最適化2: バッチONNX推論
-    for batch_idx, (indices, fbanks_batch, stems, valids) in enumerate(loader):
-        # バッチ推論: [B, T_max, 80] → [B, 192]
-        embeddings_batch = session.run(None, {input_name: fbanks_batch})[0]
-
-        # L2正規化 (バッチ全体を一括処理)
-        norms = np.linalg.norm(embeddings_batch, axis=1, keepdims=True)
-        norms = np.maximum(norms, 1e-8)
-        embeddings_batch = embeddings_batch / norms
-
+    # 個別ONNX推論（ゼロパディングによるembedding破損を回避）
+    # DataLoaderの並列CPU前処理は維持しつつ、推論は1発話ずつ実行する。
+    for batch_idx, (indices, fbank_list, stems, valids) in enumerate(loader):
         for j, (entry_idx, stem, valid) in enumerate(
             zip(indices, stems, valids, strict=False)
         ):
@@ -495,8 +496,17 @@ def extract_per_utterance(
                 fail += 1
                 continue
 
+            # 個別推論: [1, T, 80] → [1, 192]（パディングなし）
+            fbank_input = np.expand_dims(fbank_list[j], axis=0)
+            embedding = session.run(None, {input_name: fbank_input})[0].squeeze()
+
+            # L2正規化
+            norm = np.linalg.norm(embedding)
+            if norm > 1e-8:
+                embedding = embedding / norm
+
             npy_path = emb_dir / f"{stem}.npy"
-            np.save(str(npy_path), embeddings_batch[j])
+            np.save(str(npy_path), embedding)
 
             entries[entry_idx]["speaker_embedding_path"] = (
                 f"speaker_embeddings/{stem}.npy"
