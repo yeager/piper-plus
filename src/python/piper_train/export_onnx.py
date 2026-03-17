@@ -183,6 +183,30 @@ def main() -> None:
                 _LOGGER.warning("EMA state found but no matching decoder parameters")
         else:
             _LOGGER.info("No EMA state found in checkpoint, skipping EMA")
+
+        # Apply EMA weights to spk_proj if available
+        ema_spk_proj_state = ckpt.get("ema_spk_proj_state")
+        if ema_spk_proj_state and "shadow_params" in ema_spk_proj_state:
+            if hasattr(model_g, "spk_proj"):
+                applied_spk = 0
+                spk_proj_params = dict(model_g.spk_proj.named_parameters())
+                for name, shadow_param in ema_spk_proj_state["shadow_params"].items():
+                    if name in spk_proj_params:
+                        spk_proj_params[name].data.copy_(shadow_param)
+                        applied_spk += 1
+                if applied_spk > 0:
+                    _LOGGER.info(
+                        "Applied EMA weights to spk_proj: %d parameters", applied_spk
+                    )
+                else:
+                    _LOGGER.warning(
+                        "EMA spk_proj state found but no matching parameters"
+                    )
+            else:
+                _LOGGER.warning(
+                    "EMA spk_proj state found but model has no spk_proj layer"
+                )
+
         del ckpt
 
     # Check if model uses prosody features
@@ -230,12 +254,13 @@ def main() -> None:
         length_scale = scales[1]
         noise_scale_w = scales[2]
 
-        # 1. Encoder
-        x, m_p, logs_p, x_mask = model_g.enc_p(text, text_lengths)
-
+        # 1. Speaker condition (needed by enc_p and downstream modules)
         g = model_g._get_speaker_condition(sid, speaker_embedding)
 
-        # 2. Duration Predictor (called only once)
+        # 2. Encoder (pass g for speaker-conditioned TextEncoder)
+        x, m_p, logs_p, x_mask = model_g.enc_p(text, text_lengths, g=g)
+
+        # 3. Duration Predictor (called only once)
         x_dp = model_g._prepare_prosody_input(x, x_mask, prosody_features)
         if model_g.use_sdp:
             logw = model_g.dp(
@@ -247,7 +272,7 @@ def main() -> None:
         w = torch.exp(logw) * x_mask * length_scale
         durations = w.squeeze(1)  # [batch, phoneme_length]
 
-        # 3. Attention/Alignment
+        # 4. Attention/Alignment
         w_ceil = torch.ceil(w)
         y_lengths = torch.clamp_min(torch.sum(w_ceil, [1, 2]), 1).long()
         y_mask = torch.unsqueeze(
@@ -256,18 +281,18 @@ def main() -> None:
         attn_mask = torch.unsqueeze(x_mask, 2) * torch.unsqueeze(y_mask, -1)
         attn = commons.generate_path(w_ceil, attn_mask)
 
-        # 4. Expand prior
+        # 5. Expand prior
         m_p = torch.matmul(attn.squeeze(1), m_p.transpose(1, 2)).transpose(1, 2)
         logs_p = torch.matmul(attn.squeeze(1), logs_p.transpose(1, 2)).transpose(1, 2)
 
-        # 5. Sample z_p
+        # 6. Sample z_p
         if stochastic:
             noise_scale = scales[0]
             z_p = m_p + torch.randn_like(m_p) * torch.exp(logs_p) * noise_scale
         else:
             z_p = m_p
 
-        # 6. Flow + Decoder
+        # 7. Flow + Decoder
         z = model_g.flow(z_p, y_mask, g=g, reverse=True)
         o = model_g.dec((z * y_mask), g=g)
         audio = o.unsqueeze(1)

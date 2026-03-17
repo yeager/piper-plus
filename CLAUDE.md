@@ -17,8 +17,12 @@ Piper TTSは高品質なニューラルテキスト音声合成システムで�
 | Speaker Encoder | CAM++ (192次元, ONNX, Apache-2.0) |
 | アーキテクチャ | Dual-Mode Speaker Conditioning (emb_g + spk_proj MLP) |
 | gin_channels | 512 |
-| SCL | Speaker Consistency Loss（`--speaker-encoder-path` 指定時有効） |
-| DINO | 自己蒸留（EMA teacher、momentum=0.996） |
+| SCL | Speaker Consistency Loss（`--speaker-encoder-path` 指定時有効、c_spk=1.0） |
+| DINO | 自己蒸留（EMA teacher、momentum=0.996、c_dino=0.5） |
+| KLアニーリング | 10エポック（0.1→1.0 線形増加） |
+| Flow | mean_only=False, dilation_rate=2 |
+| Decoder | FiLM条件付け (scale+shift) |
+| 推論デフォルト | noise_scale=0.4, noise_scale_w=0.5 |
 
 ### CAM++ ONNXモデルのダウンロード
 
@@ -98,7 +102,69 @@ WavLM Discriminator学習は150/200 epochで中断。音割れ（クリッピン
 
 ## 実装済み機能
 
-### Zero-Shot Speaker Conditioning 改善 ✅ NEW (2026-03-17)
+### Zero-Shot Speaker Conditioning改善 Phase 2 ✅ NEW (2026-03-17)
+
+Zero-Shot TTS の話者再現精度・学習安定性・推論品質を大幅に向上させる10項目の改善。Phase 1（spk_proj MLP、SCL、DINO、L2正規化除去）をベースに、モデルアーキテクチャと学習手法の両面から強化。
+
+**1. Flow改善: mean_only=False + dilation_rate=2:**
+- `ResidualCouplingBlock` で `mean_only=False`（分散学習有効化）。affine coupling の scale も学習されるようになり、posterior→prior 変換の表現力が向上
+- `dilation_rate=2`: 指数的受容野の拡大（1,2,4,8,...）で長距離依存性をキャプチャ
+- 旧VITS実装の `mean_only=True` から変更
+
+**2. TextEncoder話者条件付け:**
+- `TextEncoder` に `gin_channels` 入力を追加、`self.cond = nn.Conv1d(gin_channels, hidden_channels, 1)`
+- encoder出力に話者条件 `g` を加算: `x = x + self.cond(g)`
+- prior分布 (m_p, logs_p) が話者依存に。zero-shot時のprior推定精度が向上
+
+**3. Decoder FiLM条件付け:**
+- 旧: additive conditioning (`x = x + self.cond(g)`)
+- 新: FiLM (Feature-wise Linear Modulation) `x = x * (1.0 + scale) + shift`
+- `self.cond = nn.Conv1d(gin_channels, upsample_initial_channel * 2, 1)` で scale/shift を同時生成
+- 話者特性がデコーダの各特徴量に対してスケール・シフト両方で作用
+
+**4. Duration Predictor乗算スケーリング:**
+- `StochasticDurationPredictor` / `DurationPredictor` に `cond_scale` を追加
+- `scale = torch.sigmoid(self.cond_scale(g)) + 0.5`、`x = x * scale + self.cond(g)`
+- 話者別の発話速度をモデリング（加算のみでは表現できない話者固有のテンポ差に対応）
+
+**5. KLアニーリング:**
+- `--kl-annealing-epochs 10`（デフォルト有効）
+- KL重みを 0.1 → 1.0 へ線形増加（`kl_weight = c_kl * (0.1 + 0.9 * epoch / kl_annealing_epochs)`）
+- 学習初期にdecoderがメル再構成に集中し、posterior collapse を回避
+
+**6. Speaker Embedding摂動:**
+- 学習時にspeaker embeddingへ `sigma=0.02` のGaussianノイズを追加
+- `speaker_embeddings = speaker_embeddings + torch.randn_like(speaker_embeddings) * 0.02`
+- 推論時の未知話者embeddingに対する汎化性能を向上
+
+**7. Validation実embedding:**
+- 旧: zero-shot validation時にゼロembedding (`torch.zeros(1, 192)`) を使用 → 意味のないaudio生成
+- 新: テスト発話の `speaker_embedding` が存在すれば実embeddingを使用、なければゼロにフォールバック
+- validation audioの品質が実際のzero-shot推論を反映
+
+**8. EMA spk_proj対応:**
+- `EMACallback` がデコーダEMAに加え `spk_proj` もEMA追跡
+- `ema_spk_proj`: validation時にshadow weightsを適用、学習時に元の重みを復元
+- checkpoint保存/復元にも `ema_spk_proj_state` を含む
+
+**9. 推論デフォルト最適化:**
+- `noise_scale=0.4`（旧: 0.667）、`noise_scale_w=0.5`（旧: 0.8）
+- zero-shot推論での話者類似度に最適化されたデフォルト値
+- `infer_onnx.py` のargparseデフォルトを更新
+
+**10. ロス重み調整:**
+- `c_spk=1.0`（デフォルト）: 非微分SCLの適切な重み
+- `c_dino=0.5`（デフォルト、旧: 0.1）: DINO自己蒸留の正則化効果を強化
+- `spk_emb_dropout=0.5`（デフォルト）: dual-mode学習でemb_gとspk_projの両方を活用
+
+**実装ファイル:**
+- `src/python/piper_train/vits/models.py` — Flow mean_only=False、TextEncoder gin_channels条件付け、Decoder FiLM、DP cond_scale
+- `src/python/piper_train/vits/lightning.py` — KLアニーリング、speaker embedding摂動、validation実embedding
+- `src/python/piper_train/vits/ema.py` — EMA spk_proj対応
+- `src/python/piper_train/infer_onnx.py` — 推論デフォルト最適化
+- `src/python/piper_train/__main__.py` — --kl-annealing-epochs、c_spk/c_dino/spk_emb_dropoutデフォルト
+
+### Zero-Shot Speaker Conditioning 改善 Phase 1 ✅ (2026-03-17)
 
 Zero-Shot TTS の話者再現精度と学習安定性を向上させる4つの改善。
 
@@ -110,7 +176,7 @@ Zero-Shot TTS の話者再現精度と学習安定性を向上させる4つの�
 - `--speaker-encoder-path` で CAM++ ONNX モデルを指定すると有効
 - 生成音声からspeaker embeddingを抽出し、参照embeddingとのコサイン類似度で損失計算
 - CAM++ は CPU ONNX で推論（CamPPSpeakerEncoder、非nn.Module）
-- `--c-spk` で重み調整（デフォルト9.0、初期学習では1.0推奨）
+- `--c-spk` で重み調整（デフォルト1.0）
 
 **3. L2正規化の除去 (`_get_speaker_condition`):**
 - MLP (LayerNorm + GELU) がスケーリングを学習するため、L2正規化が不要に
@@ -124,7 +190,7 @@ Zero-Shot TTS の話者再現精度と学習安定性を向上させる4つの�
 **DINO 自己蒸留:**
 - `spk_proj_teacher` (EMA teacher、momentum=0.996) で話者埋め込み空間を正則化
 - `dino_center` バッファで教師出力のセンタリング
-- `--c-dino` で重み調整（デフォルト0.1）
+- `--c-dino` で重み調整（デフォルト0.5）
 
 **実装ファイル:**
 - `src/python/piper_train/vits/models.py` — spk_proj MLP定義、L2正規化除去
@@ -308,8 +374,9 @@ uv run python -m piper_train \
   --ema-decay 0.9995 --num-workers 4 --no-pin-memory \
   --no-wavlm --no-compile \
   --max-spec-length 500 \
+  --kl-annealing-epochs 10 \
   --speaker-encoder-path /data/piper/models/campplus.onnx \
-  --c-spk 1.0 \
+  --c-spk 1.0 --c-dino 0.5 \
   --default_root_dir /data/piper/output-zero-shot-20speakers
 ```
 
@@ -320,11 +387,12 @@ uv run python -m piper_train \
 - `--batch-size 20`: T4の15GB VRAMに安全に収まるサイズ
 - `--max-spec-length 500`: 長すぎる発話を除外してOOM防止
 
-**SCL / DINO 設定:**
+**SCL / DINO / KLアニーリング設定:**
 - `--speaker-encoder-path`: CAM++ ONNXモデルのパスを指定するとSCL有効化
-- `--c-spk 1.0`: SCL重み（デフォルトは9.0だが、初期学習では1.0推奨）
-- `--c-dino 0.1`: DINO自己蒸留重み（デフォルト、通常変更不要）
+- `--c-spk 1.0`: SCL重み（デフォルト1.0、非微分SCL用）
+- `--c-dino 0.5`: DINO自己蒸留重み（デフォルト0.5、Phase 1の0.1から引き上げ）
 - `--spk-emb-dropout 0.5`: speaker embeddingドロップ率（デフォルト、dual-mode学習用）
+- `--kl-annealing-epochs 10`: KL重みを0.1→1.0へ10エポックかけて線形増加（0で無効化）
 
 注: `--zero-shot` フラグは不要（マルチスピーカーなら自動有効化）
 
@@ -365,6 +433,7 @@ uv run python -m piper_train \
 | 学習スクリプト | `src/python/piper_train/__main__.py` |
 | VITS実装 | `src/python/piper_train/vits/` |
 | 損失関数 (SCL, DINO) | `src/python/piper_train/vits/losses.py` |
+| EMAコールバック (dec + spk_proj) | `src/python/piper_train/vits/ema.py` |
 | Phonemizer ABC | `src/python/piper_train/phonemize/base.py` |
 | 言語レジストリ | `src/python/piper_train/phonemize/registry.py` |
 | 英語音素化 | `src/python/piper_train/phonemize/english.py` |
@@ -506,9 +575,9 @@ cat test.jsonl | CUDA_VISIBLE_DEVICES="" uv run python -m piper_train.infer_onnx
 
 ### c_spkが大きすぎてSCLが学習を支配する
 
-**原因**: `--c-spk` のデフォルト値 9.0 は高すぎる場合がある
+**原因**: `--c-spk` の値が高すぎる場合がある（非微分SCLなので過大な重みは不安定化を招く）
 
-**対処法**: 初期学習では `--c-spk 1.0` から開始し、loss_spk の推移を見ながら調整
+**対処法**: デフォルト `--c-spk 1.0` から開始し、loss_spk の推移を見ながら調整
 
 ### Speaker embeddingの品質が低い（話者再現精度が悪い）
 
@@ -517,6 +586,15 @@ cat test.jsonl | CUDA_VISIBLE_DEVICES="" uv run python -m piper_train.infer_onnx
 **対処法**:
 1. 最新版の `extract_speaker_embedding.py` を使用（個別ONNX推論、パディングなし）
 2. 既存の `speaker_embeddings/` ディレクトリを削除して再抽出
+
+### KLアニーリングが効かない
+
+**原因**: `--kl-annealing-epochs 0` が設定されている、またはepoch数が既にアニーリング期間を超過
+
+**対処法**:
+1. `--kl-annealing-epochs 10`（デフォルト）を確認。0に設定するとアニーリング無効
+2. ログで `kl_weight` の値を確認。アニーリング中は 0.1 から 1.0 へ線形増加
+3. 途中再開の場合、`current_epoch` がアニーリング期間内か確認
 
 ### ONNX変換エラー
 

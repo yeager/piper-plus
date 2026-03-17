@@ -147,14 +147,14 @@ def main():
     parser.add_argument(
         "--c-spk",
         type=float,
-        default=9.0,
-        help="Speaker consistency loss weight (default: 9.0)",
+        default=1.0,
+        help="Speaker consistency loss weight (default: 1.0, non-differentiable SCL)",
     )
     parser.add_argument(
         "--c-dino",
         type=float,
-        default=0.1,
-        help="DINO self-distillation loss weight (default: 0.1)",
+        default=0.5,
+        help="DINO self-distillation loss weight (default: 0.5)",
     )
     parser.add_argument(
         "--speaker-encoder-path",
@@ -168,6 +168,12 @@ def main():
         type=int,
         default=100000,
         help="Number of steps to freeze speaker encoder (Phase 1). Default: 100000",
+    )
+    parser.add_argument(
+        "--kl-annealing-epochs",
+        type=int,
+        default=10,
+        help="Number of epochs for KL loss annealing (0.1 → 1.0). Set 0 to disable. (default: 10)",
     )
     parser.add_argument(
         "--spk-emb-dropout",

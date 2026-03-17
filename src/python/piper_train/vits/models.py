@@ -59,13 +59,15 @@ class StochasticDurationPredictor(nn.Module):
         )
         if gin_channels != 0:
             self.cond = nn.Conv1d(gin_channels, filter_channels, 1)
+            self.cond_scale = nn.Conv1d(gin_channels, filter_channels, 1)
 
     def forward(self, x, x_mask, w=None, g=None, reverse=False, noise_scale=1.0):
         x = torch.detach(x)
         x = self.pre(x)
         if g is not None:
             g = torch.detach(g)
-            x = x + self.cond(g)
+            scale = torch.sigmoid(self.cond_scale(g)) + 0.5
+            x = x * scale + self.cond(g)
         x = self.convs(x, x_mask)
         x = self.proj(x) * x_mask
 
@@ -151,12 +153,14 @@ class DurationPredictor(nn.Module):
 
         if gin_channels != 0:
             self.cond = nn.Conv1d(gin_channels, in_channels, 1)
+            self.cond_scale = nn.Conv1d(gin_channels, in_channels, 1)
 
     def forward(self, x, x_mask, g=None):
         x = torch.detach(x)
         if g is not None:
             g = torch.detach(g)
-            x = x + self.cond(g)
+            scale = torch.sigmoid(self.cond_scale(g)) + 0.5
+            x = x * scale + self.cond(g)
         x = self.conv_1(x * x_mask)
         x = torch.relu(x)
         x = self.norm_1(x)
@@ -180,6 +184,7 @@ class TextEncoder(nn.Module):
         n_layers: int,
         kernel_size: int,
         p_dropout: float,
+        gin_channels: int = 0,
     ):
         super().__init__()
         self.n_vocab = n_vocab
@@ -199,7 +204,10 @@ class TextEncoder(nn.Module):
         )
         self.proj = nn.Conv1d(hidden_channels, out_channels * 2, 1)
 
-    def forward(self, x, x_lengths):
+        if gin_channels > 0:
+            self.cond = nn.Conv1d(gin_channels, hidden_channels, 1)
+
+    def forward(self, x, x_lengths, g=None):
         x = self.emb(x) * math.sqrt(self.hidden_channels)  # [b, t, h]
         x = torch.transpose(x, 1, -1)  # [b, h, t]
         x_mask = torch.unsqueeze(
@@ -207,6 +215,8 @@ class TextEncoder(nn.Module):
         ).type_as(x)
 
         x = self.encoder(x * x_mask, x_mask)
+        if g is not None and hasattr(self, "cond"):
+            x = x + self.cond(g)
         stats = self.proj(x) * x_mask
 
         m, logs = torch.split(stats, self.out_channels, dim=1)
@@ -243,7 +253,7 @@ class ResidualCouplingBlock(nn.Module):
                     dilation_rate,
                     n_layers,
                     gin_channels=gin_channels,
-                    mean_only=True,
+                    mean_only=False,
                 )
             )
             self.flows.append(modules.Flip())
@@ -349,12 +359,14 @@ class Generator(torch.nn.Module):
         self.ups.apply(init_weights)
 
         if gin_channels != 0:
-            self.cond = nn.Conv1d(gin_channels, upsample_initial_channel, 1)
+            self.cond = nn.Conv1d(gin_channels, upsample_initial_channel * 2, 1)
 
     def forward(self, x, g=None):
         x = self.conv_pre(x)
         if g is not None:
-            x = x + self.cond(g)
+            cond_out = self.cond(g)
+            scale, shift = cond_out.chunk(2, dim=1)
+            x = x * (1.0 + scale) + shift
 
         for i, up in enumerate(self.ups):
             x = F.leaky_relu(x, self.LRELU_SLOPE)
@@ -788,6 +800,7 @@ class SynthesizerTrn(nn.Module):
             n_layers,
             kernel_size,
             p_dropout,
+            gin_channels=gin_channels,
         )
         self.dec = Generator(
             inter_channels,
@@ -809,7 +822,7 @@ class SynthesizerTrn(nn.Module):
             gin_channels=gin_channels,
         )
         self.flow = ResidualCouplingBlock(
-            inter_channels, hidden_channels, 5, 1, 4, gin_channels=gin_channels
+            inter_channels, hidden_channels, 5, 2, 4, gin_channels=gin_channels
         )
 
         # Prosody feature projection (A1/A2/A3 → prosody_dim)
@@ -900,8 +913,8 @@ class SynthesizerTrn(nn.Module):
         prosody_features=None,
         speaker_embedding=None,
     ):
-        x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths)
         g = self._get_speaker_condition(sid, speaker_embedding)
+        x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths, g=g)
 
         z, m_q, logs_q, y_mask = self.enc_q(y, y_lengths, g=g)
         z_p = self.flow(z, y_mask, g=g)
@@ -974,8 +987,8 @@ class SynthesizerTrn(nn.Module):
         prosody_features=None,
         speaker_embedding=None,
     ):
-        x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths)
         g = self._get_speaker_condition(sid, speaker_embedding)
+        x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths, g=g)
 
         # Prepare input for duration predictor with prosody features
         x_dp = self._prepare_prosody_input(x, x_mask, prosody_features)

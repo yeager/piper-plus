@@ -182,12 +182,14 @@ class VitsModel(pl.LightningModule):
         # Zero-shot TTS (enabled by default for multi-speaker models)
         use_zero_shot: bool = True,
         spk_embed_dim: int = 192,
-        c_spk: float = 9.0,
-        c_dino: float = 0.1,
+        c_spk: float = 1.0,
+        c_dino: float = 0.5,
         speaker_encoder_path: str | None = None,
         freeze_speaker_encoder_steps: int = 100000,
         # Speaker embedding dropout for dual-mode training
-        spk_emb_dropout: float = 0.1,
+        spk_emb_dropout: float = 0.5,
+        # KL annealing: linearly increase KL weight from 0.1 to c_kl over this many epochs
+        kl_annealing_epochs: int = 10,
         # WavLM Discriminator (enabled by default for improved audio quality)
         use_wavlm_discriminator: bool = True,
         wavlm_model_name: str = "microsoft/wavlm-base-plus",
@@ -596,6 +598,10 @@ class VitsModel(pl.LightningModule):
             if drop < self.hparams.spk_emb_dropout:
                 speaker_embeddings = None
 
+        # Speaker embedding perturbation for zero-shot generalization
+        if self.training and speaker_embeddings is not None:
+            speaker_embeddings = speaker_embeddings + torch.randn_like(speaker_embeddings) * 0.02
+
         (
             y_hat,
             l_length,
@@ -654,10 +660,16 @@ class VitsModel(pl.LightningModule):
         y_d_hat_r, y_d_hat_g, fmap_r, fmap_g = self.model_d(y, y_hat)
 
         with autocast(self.device.type, enabled=False):
+            # KL annealing: linearly increase from 0.1 to c_kl over kl_annealing_epochs
+            if self.hparams.kl_annealing_epochs > 0 and self.current_epoch < self.hparams.kl_annealing_epochs:
+                kl_weight = self.hparams.c_kl * (0.1 + 0.9 * self.current_epoch / self.hparams.kl_annealing_epochs)
+            else:
+                kl_weight = self.hparams.c_kl
+
             # Generator loss
             loss_dur = torch.sum(l_length.float())
             loss_mel = F.l1_loss(y_mel, y_hat_mel) * self.hparams.c_mel
-            loss_kl = kl_loss(z_p, logs_q, m_p, logs_p, z_mask) * self.hparams.c_kl
+            loss_kl = kl_loss(z_p, logs_q, m_p, logs_p, z_mask) * kl_weight
 
             loss_fm = feature_loss(fmap_r, fmap_g)
             loss_gen, _losses_gen = generator_loss(y_d_hat_g)
@@ -741,6 +753,7 @@ class VitsModel(pl.LightningModule):
                     self.dino_center.mul_(0.996).add_(batch_center, alpha=0.004)
 
             self._log_with_batch_info("loss_gen_all", loss_gen_all, batch)
+            self._log_with_batch_info("kl_weight", kl_weight, batch)
 
             return loss_gen_all
 
@@ -801,9 +814,13 @@ class VitsModel(pl.LightningModule):
                 if test_utt.speaker_id is not None
                 else None
             )
+            # Use real speaker embedding from test utterance instead of zeros
             spk_emb = None
             if self.hparams.use_zero_shot:
-                spk_emb = torch.zeros(1, self.hparams.spk_embed_dim, device=self.device)
+                if test_utt.speaker_embedding is not None:
+                    spk_emb = test_utt.speaker_embedding.unsqueeze(0).to(self.device)
+                else:
+                    spk_emb = torch.zeros(1, self.hparams.spk_embed_dim, device=self.device)
             with torch.no_grad():
                 test_audio, *_ = self.model_g.infer(
                     text,
