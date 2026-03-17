@@ -614,6 +614,7 @@ class VitsModel(pl.LightningModule):
                     for p_ema, p in zip(
                         self.spk_proj_teacher.parameters(),
                         self.model_g.spk_proj.parameters(),
+                        strict=True,
                     ):
                         p_ema.mul_(0.996).add_(p.data, alpha=0.004)
 
