@@ -92,7 +92,7 @@ class VitsModel(pl.LightningModule):
         speaker_encoder_path: str | None = None,
         freeze_speaker_encoder_steps: int = 100000,
         # Speaker embedding dropout for dual-mode training
-        spk_emb_dropout: float = 0.5,
+        spk_emb_dropout: float = 0.1,
         # WavLM Discriminator (enabled by default for improved audio quality)
         use_wavlm_discriminator: bool = True,
         wavlm_model_name: str = "microsoft/wavlm-base-plus",
@@ -116,9 +116,11 @@ class VitsModel(pl.LightningModule):
         # Discriminator update interval (D:G = 1:d_update_interval)
         self.d_update_interval = self.hparams.get("d_update_interval", 1)
 
-        # DINO center buffer for zero-shot training
+        # DINO center buffer and EMA teacher for zero-shot training
         if use_zero_shot:
             self.register_buffer("dino_center", torch.zeros(gin_channels))
+            # EMA copy of spk_proj used as DINO teacher.
+            # Initialized after model_g is created (see below).
 
         # Set up models
         self.model_g = SynthesizerTrn(
@@ -145,6 +147,13 @@ class VitsModel(pl.LightningModule):
             use_zero_shot=self.hparams.use_zero_shot,
             spk_embed_dim=self.hparams.spk_embed_dim,
         )
+        # Initialize DINO EMA teacher from spk_proj (must be after model_g creation)
+        if use_zero_shot and hasattr(self.model_g, "spk_proj"):
+            import copy  # noqa: PLC0415
+
+            self.spk_proj_teacher = copy.deepcopy(self.model_g.spk_proj)
+            self.spk_proj_teacher.requires_grad_(False)
+
         self.model_d = MultiPeriodDiscriminator(
             use_spectral_norm=self.hparams.use_spectral_norm
         )
@@ -583,21 +592,16 @@ class VitsModel(pl.LightningModule):
                 self._log_with_batch_info("loss_spk", loss_spk, batch)
 
             # --- DINO Self-Distillation Loss ---
-            # Uses spk_proj output as student and the input speaker_embeddings
-            # as teacher. No speaker encoder needed — operates entirely in the
-            # embedding space of the generator's projection layer.
+            # Student uses current spk_proj; teacher uses an EMA copy
+            # (spk_proj_teacher) that evolves slowly, providing stable targets.
             if (
                 self.hparams.c_dino > 0
                 and speaker_embeddings is not None
-                and hasattr(self.model_g, "spk_proj")
+                and hasattr(self, "spk_proj_teacher")
             ):
-                # Student: spk_proj(speaker_embeddings) — the projected embedding
-                # that the generator actually conditions on.
                 student_emb = self.model_g.spk_proj(speaker_embeddings)
-                # Teacher: spk_proj output detached — both student and teacher
-                # operate in the same gin_channels-dim space (512).
                 with torch.no_grad():
-                    teacher_emb = self.model_g.spk_proj(speaker_embeddings).detach()
+                    teacher_emb = self.spk_proj_teacher(speaker_embeddings)
                 loss_dino = (
                     dino_loss(student_emb, teacher_emb, self.dino_center)
                     * self.hparams.c_dino
@@ -605,8 +609,15 @@ class VitsModel(pl.LightningModule):
                 loss_gen_all = loss_gen_all + loss_dino
                 self._log_with_batch_info("loss_dino", loss_dino, batch)
 
-                # Update DINO center with EMA (momentum = 0.996)
-                # Uses in-place ops to preserve register_buffer tracking.
+                # Update DINO teacher EMA (momentum = 0.996)
+                with torch.no_grad():
+                    for p_ema, p in zip(
+                        self.spk_proj_teacher.parameters(),
+                        self.model_g.spk_proj.parameters(),
+                    ):
+                        p_ema.mul_(0.996).add_(p.data, alpha=0.004)
+
+                # Update DINO center with EMA
                 with torch.no_grad():
                     batch_center = teacher_emb.mean(dim=0)
                     if torch.distributed.is_initialized():
