@@ -92,7 +92,7 @@ class TestZeroShotInit:
     def test_spk_proj_parameter_count(self):
         """Verify spk_proj parameter count is in a reasonable range.
 
-        The spk_proj MLP has: Linear(192,768) + LayerNorm(768) + GELU + Linear(768,768) + LayerNorm(768).
+        The spk_proj MLP has: Linear(192,768) + LayerNorm(768) + GELU + Linear(768,768).
         Total architecture parameter count may shift as other components change,
         so we verify the spk_proj sub-module in isolation.
         """
@@ -107,9 +107,8 @@ class TestZeroShotInit:
         # Linear(192,768): 192*768 + 768 = 148,224
         # LayerNorm(768): 768 + 768 = 1,536
         # Linear(768,768): 768*768 + 768 = 590,592
-        # LayerNorm(768): 768 + 768 = 1,536 (output normalization)
-        # Total: 741,888
-        expected = (192 * 768 + 768) + (768 + 768) + (768 * 768 + 768) + (768 + 768)
+        # Total: 740,352
+        expected = (192 * 768 + 768) + (768 + 768) + (768 * 768 + 768)
         assert param_count == expected, (
             f"spk_proj param count {param_count} != expected {expected}"
         )
