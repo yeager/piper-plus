@@ -450,6 +450,8 @@ class ResidualCouplingLayer(nn.Module):
         stats = self.post(h) * x_mask
         if not self.mean_only:
             m, logs = torch.split(stats, [self.half_channels] * 2, 1)
+            # Clamp logs to prevent exp overflow in affine coupling (NaN root cause #3)
+            logs = logs.clamp(min=-5.0, max=5.0)
         else:
             m = stats
             logs = torch.zeros_like(m)

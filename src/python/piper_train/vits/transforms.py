@@ -171,7 +171,8 @@ def rational_quadratic_spline(
         c = -input_delta * (inputs - input_cumheights)
 
         discriminant = b.pow(2) - 4 * a * c
-        assert (discriminant >= 0).all(), discriminant
+        # Clamp instead of assert to handle FP16 rounding errors (NaN fix #9)
+        discriminant = discriminant.clamp(min=0.0)
 
         root = (2 * c) / (-b - torch.sqrt(discriminant))
         outputs = root * input_bin_widths + input_cumwidths

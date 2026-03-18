@@ -206,6 +206,9 @@ class TextEncoder(nn.Module):
 
         if gin_channels > 0:
             self.cond = nn.Conv1d(gin_channels, hidden_channels, 1)
+            # Zero-initialize to start as identity (NaN root cause #4)
+            nn.init.zeros_(self.cond.weight)
+            nn.init.zeros_(self.cond.bias)
 
     def forward(self, x, x_lengths, g=None):
         x = self.emb(x) * math.sqrt(self.hidden_channels)  # [b, t, h]
@@ -306,6 +309,8 @@ class PosteriorEncoder(nn.Module):
         x = self.enc(x, x_mask, g=g)
         stats = self.proj(x) * x_mask
         m, logs = torch.split(stats, self.out_channels, dim=1)
+        # Clamp logs to prevent exp overflow in FP16 (NaN fix #7)
+        logs = logs.clamp(min=-5.0, max=5.0)
         z = (m + torch.randn_like(m) * torch.exp(logs)) * x_mask
         return z, m, logs, x_mask
 
@@ -360,13 +365,17 @@ class Generator(torch.nn.Module):
 
         if gin_channels != 0:
             self.cond = nn.Conv1d(gin_channels, upsample_initial_channel * 2, 1)
+            # Zero-initialize so FiLM starts as identity (scale=0, shift=0) (NaN fix #10)
+            nn.init.zeros_(self.cond.weight)
+            nn.init.zeros_(self.cond.bias)
 
     def forward(self, x, g=None):
         x = self.conv_pre(x)
         if g is not None:
             cond_out = self.cond(g)
             scale, shift = cond_out.chunk(2, dim=1)
-            x = x * (1.0 + scale) + shift
+            # Constrain scale with tanh to prevent FP16 overflow (NaN root cause #2)
+            x = x * (1.0 + torch.tanh(scale)) + shift
 
         for i, up in enumerate(self.ups):
             x = F.leaky_relu(x, self.LRELU_SLOPE)

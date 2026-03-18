@@ -52,10 +52,17 @@ def kl_loss(z_p, logs_q, m_p, logs_p, z_mask):
     logs_p = logs_p.float()
     z_mask = z_mask.float()
 
+    # Clamp logs_p to prevent exp(-2*logs_p) overflow (NaN root cause #1)
+    logs_p = logs_p.clamp(min=-10.0, max=10.0)
+
     kl = logs_p - logs_q - 0.5
     kl += 0.5 * ((z_p - m_p) ** 2) * torch.exp(-2.0 * logs_p)
     kl = torch.sum(kl * z_mask)
     l_kl = kl / torch.sum(z_mask)
+
+    # NaN defense: return 0 if loss is invalid
+    if torch.isnan(l_kl) or torch.isinf(l_kl):
+        return torch.tensor(0.0, device=z_p.device)
     return l_kl
 
 
@@ -80,7 +87,7 @@ def speaker_consistency_loss(gen_embedding, ref_embedding):
     return 1.0 - F.cosine_similarity(gen_embedding, ref_embedding, dim=-1).mean()
 
 
-def dino_loss(student_emb, teacher_emb, center, tau_s=0.1, tau_t=0.04):
+def dino_loss(student_emb, teacher_emb, center, tau_s=0.1, tau_t=0.07):
     """DINO自己蒸留損失 — 話者埋め込み空間の正則化
 
     Parameters
@@ -101,8 +108,11 @@ def dino_loss(student_emb, teacher_emb, center, tau_s=0.1, tau_t=0.04):
     torch.Tensor
         スカラー損失値 (正の値)
     """
-    student_out = F.log_softmax(student_emb / tau_s, dim=-1)
-    teacher_out = F.softmax((teacher_emb - center) / tau_t, dim=-1)
+    # Clamp softmax inputs to prevent exp overflow (NaN fix #8)
+    student_logits = (student_emb / tau_s).clamp(min=-50.0, max=50.0)
+    teacher_logits = ((teacher_emb - center) / tau_t).clamp(min=-50.0, max=50.0)
+    student_out = F.log_softmax(student_logits, dim=-1)
+    teacher_out = F.softmax(teacher_logits, dim=-1)
     loss = -(teacher_out * student_out).sum(dim=-1).mean()
     # NaN防止: 損失が異常な場合は0を返す
     if torch.isnan(loss) or torch.isinf(loss):

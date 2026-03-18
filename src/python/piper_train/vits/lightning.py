@@ -744,24 +744,27 @@ class VitsModel(pl.LightningModule):
                 loss_gen_all = loss_gen_all + loss_dino
                 self._log_with_batch_info("loss_dino", loss_dino, batch)
 
-                # Update DINO teacher EMA (momentum = 0.996)
-                with torch.no_grad():
-                    for p_ema, p in zip(
-                        self.spk_proj_teacher.parameters(),
-                        self.model_g.spk_proj.parameters(),
-                        strict=True,
-                    ):
-                        p_ema.mul_(0.996).add_(p.data, alpha=0.004)
+                # Update DINO teacher EMA and center only during training
+                # (NaN root cause #5: validation_step calls training_step_g,
+                #  which was updating center during validation)
+                if self.training:
+                    with torch.no_grad():
+                        for p_ema, p in zip(
+                            self.spk_proj_teacher.parameters(),
+                            self.model_g.spk_proj.parameters(),
+                            strict=True,
+                        ):
+                            p_ema.mul_(0.996).add_(p.data, alpha=0.004)
 
-                # Update DINO center with EMA
-                with torch.no_grad():
-                    batch_center = teacher_emb.mean(dim=0)
-                    if torch.distributed.is_initialized():
-                        torch.distributed.all_reduce(
-                            batch_center, op=torch.distributed.ReduceOp.AVG
-                        )
-                    self.dino_center.mul_(0.996).add_(batch_center, alpha=0.004)
-                    self.dino_center.clamp_(min=-10, max=10)
+                    # Update DINO center with EMA
+                    with torch.no_grad():
+                        batch_center = teacher_emb.mean(dim=0)
+                        if torch.distributed.is_initialized():
+                            torch.distributed.all_reduce(
+                                batch_center, op=torch.distributed.ReduceOp.AVG
+                            )
+                        self.dino_center.mul_(0.996).add_(batch_center, alpha=0.004)
+                        self.dino_center.clamp_(min=-10, max=10)
 
             self._log_with_batch_info("loss_gen_all", loss_gen_all, batch)
             self._log_with_batch_info("kl_weight", kl_weight, batch)

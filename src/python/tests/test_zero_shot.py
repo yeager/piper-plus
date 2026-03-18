@@ -461,6 +461,9 @@ class TestTextEncoderSpeakerConditioning:
             p_dropout=0.1,
             gin_channels=512,
         )
+        # cond is zero-initialized for stability; set non-zero weights to test conditioning
+        with torch.no_grad():
+            enc.cond.weight.normal_(0, 0.01)
         enc.eval()
 
         x = torch.randint(0, 50, (1, 10))
@@ -588,6 +591,9 @@ class TestGeneratorFiLMConditioning:
             upsample_kernel_sizes=[16, 16, 4, 4],
             gin_channels=768,
         )
+        # FiLM cond is zero-initialized for stability; set non-zero weights to test
+        with torch.no_grad():
+            gen.cond.weight.normal_(0, 0.01)
         gen.eval()
 
         x = torch.randn(1, 192, 10)
