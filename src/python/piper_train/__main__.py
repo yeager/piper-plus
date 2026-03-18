@@ -353,8 +353,10 @@ def main():
                 every_n_epochs=args.checkpoint_epochs,
                 save_top_k=args.save_top_k,
                 save_last=True,
-                monitor="val_loss",
-                mode="min",
+                # monitor=None + save_on_train_epoch_end=True ensures checkpoints
+                # are saved every N epochs regardless of validation schedule.
+                # (monitor="val_loss" caused skips when check_val_every_n_epoch > 1)
+                save_on_train_epoch_end=True,
             )
         )
         _LOGGER.debug(
@@ -571,8 +573,7 @@ def main():
                         every_n_epochs=args.checkpoint_epochs,
                         save_top_k=args.save_top_k,
                         save_last=True,
-                        monitor="val_loss",
-                        mode="min",
+                        save_on_train_epoch_end=True,
                     )
                 )
                 _LOGGER.debug(
