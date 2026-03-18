@@ -77,11 +77,7 @@ def speaker_consistency_loss(gen_embedding, ref_embedding):
     # NaN/Infチェック: CAM++ ONNX出力が異常な場合は0を返す
     if torch.isnan(gen_embedding).any() or torch.isnan(ref_embedding).any():
         return torch.tensor(0.0, device=gen_embedding.device)
-    gen_emb = F.normalize(gen_embedding, p=2, dim=-1)
-    ref_emb = F.normalize(ref_embedding, p=2, dim=-1)
-    cos_sim = F.cosine_similarity(gen_emb, ref_emb, dim=-1)
-    cos_sim = torch.clamp(cos_sim, -1.0, 1.0)
-    return 1.0 - cos_sim.mean()
+    return 1.0 - F.cosine_similarity(gen_embedding, ref_embedding, dim=-1).mean()
 
 
 def dino_loss(student_emb, teacher_emb, center, tau_s=0.1, tau_t=0.04):
@@ -105,10 +101,6 @@ def dino_loss(student_emb, teacher_emb, center, tau_s=0.1, tau_t=0.04):
     torch.Tensor
         スカラー損失値 (正の値)
     """
-    # L2正規化で数値安定性を確保（unbounded growthを防止）
-    student_emb = F.normalize(student_emb, p=2, dim=-1)
-    teacher_emb = F.normalize(teacher_emb, p=2, dim=-1)
-    center = F.normalize(center, p=2, dim=-1) if center.norm() > 0 else center
     student_out = F.log_softmax(student_emb / tau_s, dim=-1)
     teacher_out = F.softmax((teacher_emb - center) / tau_t, dim=-1)
     loss = -(teacher_out * student_out).sum(dim=-1).mean()
