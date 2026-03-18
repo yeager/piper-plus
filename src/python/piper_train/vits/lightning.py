@@ -761,6 +761,7 @@ class VitsModel(pl.LightningModule):
                             batch_center, op=torch.distributed.ReduceOp.AVG
                         )
                     self.dino_center.mul_(0.996).add_(batch_center, alpha=0.004)
+                    self.dino_center.clamp_(min=-10, max=10)
 
             self._log_with_batch_info("loss_gen_all", loss_gen_all, batch)
             self._log_with_batch_info("kl_weight", kl_weight, batch)

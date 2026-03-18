@@ -850,6 +850,7 @@ class SynthesizerTrn(nn.Module):
                 nn.LayerNorm(gin_channels),
                 nn.GELU(),
                 nn.Linear(gin_channels, gin_channels),
+                nn.LayerNorm(gin_channels),
             )
 
     def _get_speaker_condition(self, sid, speaker_embedding):
