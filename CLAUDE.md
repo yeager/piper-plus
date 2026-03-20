@@ -4,9 +4,52 @@ Piper TTSは高品質なニューラルテキスト音声合成システムで�
 
 ---
 
-## 🚀 現在の状態: VITS2 アップグレード完了
+## 🚀 現在の状態: VITS2 アップグレード完了 — つくよみちゃんFT待ち
 
-**ブランチ**: `feat/vits2-upgrade` (VITS2実装、devからの派生)
+**ブランチ**: `feat/vits2-upgrade` (VITS2実装、devからの派生、最新devリベース済み)
+
+### 現在の状況 (2026-03-20)
+
+**完了:**
+- VITS2 6lang学習完了 (60 epoch, 29時間, 4x V100)
+- ONNX エクスポート済み: `output-vits2-6lang/vits2-6lang-60epoch.onnx` (34MB FP16)
+- 6言語推論テスト完了 (VITS1との比較済み)
+- CLAUDE.md ドキュメント更新済み
+- CI修正 (F811重複メソッド) プッシュ済み
+- 最新devリベース済み (C#/Rust追加分を取り込み)
+
+**次にやること:**
+1. **つくよみちゃん VITS2 ファインチューニング** — GPU復帰後にTemplate Dで実行:
+   ```bash
+   export WANDB_API_KEY=$(grep WANDB_API_KEY /data/piper/.env | cut -d= -f2) && \
+   NCCL_DEBUG=WARN NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1 \
+   nohup uv run python -m piper_train \
+     --dataset-dir /data/piper/dataset-tsukuyomi-finetune-6lang \
+     --prosody-dim 16 \
+     --accelerator gpu --devices 1 --precision 32-true \
+     --max_epochs 500 --batch-size 4 --samples-per-speaker 4 \
+     --checkpoint-epochs 50 --quality medium \
+     --base_lr 2e-5 --disable_auto_lr_scaling \
+     --ema-decay 0.9995 \
+     --max-phoneme-ids 400 \
+     --no-wavlm \
+     --val-every-n-epochs 50 \
+     --audio-log-epochs 50 \
+     --mas-noise-start 0.01 --mas-noise-decay 2e-6 \
+     --mel-posterior-encoder \
+     --no-sdp --speaker-conditioned-encoder \
+     --resume-from-multispeaker-checkpoint \
+       /data/piper/output-vits2-6lang/checkpoints/epoch=59-step=198855.ckpt \
+     --default_root_dir /data/piper/output-tsukuyomi-finetune-vits2 \
+     > /data/piper/training_tsukuyomi_vits2.log 2>&1 &
+   ```
+2. **ONNX エクスポート + emb_lang後処理** — 学習完了後、emb_lang[0]→emb_lang[1:5]コピーしてからONNX変換
+3. **VITS1つくよみちゃんとの品質比較** — 同一テキストで6言語生成し聴覚比較
+4. **feat/vits2-upgrade → dev マージ** — 品質確認後にPR作成
+
+**注意事項:**
+- JA発話速度がVITS1よりやや遅い → 推論時 `--length-scale 0.8` で調整可能
+- VITS2ベースモデルのgin_channels=256はVITS1の512と非互換 (チェックポイント流用不可)
 
 ### 最新データセット: `dataset-multilingual-6lang-filtered` (6言語マルチリンガル)
 
