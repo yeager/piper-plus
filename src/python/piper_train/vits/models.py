@@ -60,6 +60,12 @@ class StochasticDurationPredictor(nn.Module):
         if gin_channels != 0:
             self.cond = nn.Conv1d(gin_channels, filter_channels, 1)
             self.cond_scale = nn.Conv1d(gin_channels, filter_channels, 1)
+            # Zero-init: sigmoid(0)+0.5=1.0 (identity scale), cond(g)=0 (no shift)
+            # Lets SDP learn basic duration patterns before speaker conditioning
+            nn.init.zeros_(self.cond.weight)
+            nn.init.zeros_(self.cond.bias)
+            nn.init.zeros_(self.cond_scale.weight)
+            nn.init.zeros_(self.cond_scale.bias)
 
     def forward(self, x, x_mask, w=None, g=None, reverse=False, noise_scale=1.0):
         x = torch.detach(x)
@@ -154,6 +160,12 @@ class DurationPredictor(nn.Module):
         if gin_channels != 0:
             self.cond = nn.Conv1d(gin_channels, in_channels, 1)
             self.cond_scale = nn.Conv1d(gin_channels, in_channels, 1)
+            # Zero-init: sigmoid(0)+0.5=1.0 (identity scale), cond(g)=0 (no shift)
+            # Lets DP learn basic duration patterns before speaker conditioning
+            nn.init.zeros_(self.cond.weight)
+            nn.init.zeros_(self.cond.bias)
+            nn.init.zeros_(self.cond_scale.weight)
+            nn.init.zeros_(self.cond_scale.bias)
 
     def forward(self, x, x_mask, g=None):
         x = torch.detach(x)
@@ -300,6 +312,10 @@ class PosteriorEncoder(nn.Module):
             gin_channels=gin_channels,
         )
         self.proj = nn.Conv1d(hidden_channels, out_channels * 2, 1)
+        # Initialize logs bias to -2.0 to prevent logs_q from drifting above
+        # the clamp boundary in early training (posterior collapse fix)
+        with torch.no_grad():
+            self.proj.bias.data[out_channels:] = -2.0
 
     def forward(self, x, x_lengths, g=None):
         x_mask = torch.unsqueeze(
@@ -309,8 +325,9 @@ class PosteriorEncoder(nn.Module):
         x = self.enc(x, x_mask, g=g)
         stats = self.proj(x) * x_mask
         m, logs = torch.split(stats, self.out_channels, dim=1)
-        # Clamp logs to prevent exp overflow in FP16 (NaN fix #7)
-        logs = logs.clamp(min=-5.0, max=5.0)
+        # Soft clamp using tanh to maintain gradients at boundaries
+        # (posterior collapse fix: hard clamp zeroed gradients, preventing recovery)
+        logs = torch.tanh(logs / 4.0) * 4.0  # smooth range ~[-4, 4]
         z = (m + torch.randn_like(m) * torch.exp(logs)) * x_mask
         return z, m, logs, x_mask
 

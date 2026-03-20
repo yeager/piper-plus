@@ -842,12 +842,18 @@ class VitsModel(pl.LightningModule):
                     text,
                     text_lengths,
                     sid=sid,
-                    noise_scale=0.667,
+                    noise_scale=0.4,
                     length_scale=1.0,
-                    noise_scale_w=0.8,
+                    noise_scale_w=0.5,
                     speaker_embedding=spk_emb,
                 )
-            test_audio = test_audio * (1.0 / max(0.01, abs(test_audio.max())))
+            # Log raw amplitude to detect posterior collapse early
+            max_amp = abs(test_audio.max())
+            self.log("val_max_amplitude", max_amp, prog_bar=False)
+            if max_amp < 0.1:
+                _LOGGER.warning(
+                    "Low audio amplitude (%.4f) — possible posterior collapse", max_amp
+                )
             tag = test_utt.text or str(utt_idx)
             self.logger.experiment.add_audio(
                 tag, test_audio, sample_rate=self.hparams.sample_rate

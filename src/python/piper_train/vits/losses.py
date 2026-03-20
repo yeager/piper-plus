@@ -52,8 +52,10 @@ def kl_loss(z_p, logs_q, m_p, logs_p, z_mask):
     logs_p = logs_p.float()
     z_mask = z_mask.float()
 
-    # Clamp logs_p to prevent exp(-2*logs_p) overflow (NaN root cause #1)
-    logs_p = logs_p.clamp(min=-10.0, max=10.0)
+    # Soft clamp logs_p to match logs_q range and maintain gradients
+    # (posterior collapse fix: hard clamp zeroed gradients on logs_p,
+    #  preventing prior from adapting to posterior distribution)
+    logs_p = torch.tanh(logs_p / 4.0) * 4.0  # smooth range ~[-4, 4]
 
     kl = logs_p - logs_q - 0.5
     kl += 0.5 * ((z_p - m_p) ** 2) * torch.exp(-2.0 * logs_p)

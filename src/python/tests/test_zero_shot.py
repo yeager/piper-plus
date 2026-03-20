@@ -820,7 +820,7 @@ class TestDurationPredictorScale:
 
     @pytest.mark.unit
     def test_duration_predictor_different_g_different_output(self):
-        """DurationPredictor produces different outputs with different speaker conditioning"""
+        """DurationPredictor cond/cond_scale are zero-initialized, diverge after training"""
         torch.manual_seed(42)
         dp = DurationPredictor(
             in_channels=192,
@@ -836,13 +836,25 @@ class TestDurationPredictorScale:
         g1 = torch.randn(1, 768, 1)
         g2 = torch.randn(1, 768, 1)
 
+        # At init: zero-init means identical outputs for any g (by design)
         with torch.no_grad():
             out1 = dp(x, x_mask, g=g1)
             out2 = dp(x, x_mask, g=g2)
 
+        assert torch.allclose(out1, out2, atol=1e-5), (
+            "Zero-initialized cond/cond_scale should produce identical outputs"
+        )
+
+        # After weight perturbation (simulating training), outputs should differ
+        with torch.no_grad():
+            dp.cond_scale.weight.add_(torch.randn_like(dp.cond_scale.weight) * 0.1)
+            dp.cond.weight.add_(torch.randn_like(dp.cond.weight) * 0.1)
+            out1 = dp(x, x_mask, g=g1)
+            out2 = dp(x, x_mask, g=g2)
+
         assert not torch.allclose(out1, out2, atol=1e-5), (
-            "DurationPredictor should produce different outputs with different g "
-            "(cond_scale provides multiplicative conditioning)"
+            "After training, DurationPredictor should produce different outputs "
+            "with different g"
         )
 
     @pytest.mark.unit

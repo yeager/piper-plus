@@ -450,8 +450,10 @@ class ResidualCouplingLayer(nn.Module):
         stats = self.post(h) * x_mask
         if not self.mean_only:
             m, logs = torch.split(stats, [self.half_channels] * 2, 1)
-            # Clamp logs to prevent exp overflow in affine coupling (NaN root cause #3)
-            logs = logs.clamp(min=-5.0, max=5.0)
+            # Soft clamp using tanh to maintain gradients at boundaries
+            # (posterior collapse fix: hard clamp caused flow logs to saturate
+            #  at -5.0, then exp(-logs)=148.4 per layer exploded in reverse)
+            logs = torch.tanh(logs / 3.0) * 3.0  # smooth range ~[-3, 3]
         else:
             m = stats
             logs = torch.zeros_like(m)
