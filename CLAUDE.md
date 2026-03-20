@@ -4,9 +4,9 @@ Piper TTSは高品質なニューラルテキスト音声合成システムで�
 
 ---
 
-## 🚀 現在の状態: 6言語マルチリンガル対応
+## 🚀 現在の状態: VITS2 アップグレード完了
 
-**ブランチ**: `dev`
+**ブランチ**: `feat/vits2-upgrade` (VITS2実装、devからの派生)
 
 ### 最新データセット: `dataset-multilingual-6lang-filtered` (6言語マルチリンガル)
 
@@ -18,7 +18,7 @@ Piper TTSは高品質なニューラルテキスト音声合成システムで�
 | シンボル数 | 173 |
 | 言語数 | 6 (ja=0, en=1, zh=2, es=3, fr=4, pt=5) |
 | 最小発話数/話者 | 31 (>=30 でフィルタ済み) |
-| 状態 | **学習完了 (2026-03-16)** -- 75 epoch、epoch=74-step=504712.ckpt |
+| 状態 | **VITS1: 学習完了 (2026-03-16)** -- 75 epoch、epoch=74-step=504712.ckpt |
 
 **言語別内訳:**
 
@@ -63,6 +63,90 @@ nohup /data/piper/.venv/bin/python -m piper_train \
 | `--checkpoint-epochs 5` | 75ep / 5 = 15 チェックポイント |
 | 実際の学習時間 | ~92時間 (~3.8日) -- 7回リスタート含む |
 | language-balanced-sampling | 自動有効化 (話者比 >= 3:1) |
+
+---
+
+## VITS2 6言語学習 (2026-03-20 完了)
+
+VITS1 6langモデルと同じデータセットでVITS2アーキテクチャに切り替えて再学習。60 epoch、約29時間で完了。
+
+### VITS2 アーキテクチャ変更点
+
+| 項目 | VITS1 | VITS2 |
+|------|-------|-------|
+| Posterior Encoder入力 | Linear Spec (513ch) | Mel Spec (80ch) |
+| MAS | 通常 | Noise-Scaled |
+| Duration Predictor | Stochastic (SDP) | Deterministic (DP) |
+| Duration判別器 | なし | Duration Discriminator V2 |
+| TextEncoder | 通常 | Speaker-Conditioned |
+| gin_channels | 512 | 256 |
+| LRスケジューラ | ExponentialLR | CosineAnnealingLR + Warmup |
+| Optimizer数 | 2 (G, D) | 3 (G, D, DurDisc) |
+| パラメータ数 | 77.6M | 38.9M |
+
+### VITS2 学習結果
+
+| 項目 | 値 |
+|------|-----|
+| 学習エポック | 60 |
+| 学習時間 | ~29時間 (4x V100) |
+| batch_size | 32 |
+| ONNX (FP16) | 34 MB |
+| チェックポイント | `output-vits2-6lang/checkpoints/epoch=59-step=198855.ckpt` |
+| ONNX | `output-vits2-6lang/vits2-6lang-60epoch.onnx` |
+| WandB | `piper-tts/runs/0b1yeq4v` |
+
+### VITS1 vs VITS2 推論比較
+
+| 言語 | テキスト | VITS1 音声長 | VITS2 音声長 | VITS2 RTF |
+|------|---------|------------|------------|-----------|
+| JA | こんにちは、今日は良い天気ですね。 | 2.51s | 2.79s | 0.06 |
+| EN | Hello, how are you today? | 1.01s | 1.32s | 0.16 |
+| ZH | 你好，今天天气很好。 | 2.29s | 2.47s | 0.05 |
+| ES | ¿Hola, cómo estás hoy? | 1.14s | 1.32s | 0.18 |
+| FR | Bonjour, comment allez-vous? | 1.43s | 1.23s | 0.17 |
+| PT | Olá, como você está hoje? | 1.47s | 1.60s | 0.14 |
+
+**所見:** Duration Discriminatorにより多くの言語で音声長が改善。JA発話速度がやや遅め（`--length-scale 0.8`で調整可能）。
+
+### VITS2 学習コマンド
+
+```bash
+export WANDB_API_KEY=$(grep WANDB_API_KEY /data/piper/.env | cut -d= -f2) && \
+NCCL_DEBUG=WARN NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1 \
+nohup uv run python -m piper_train \
+  --dataset-dir /data/piper/dataset-multilingual-6lang-filtered \
+  --prosody-dim 16 \
+  --accelerator gpu --devices 4 --precision 32-true \
+  --max_epochs 60 --batch-size 32 --samples-per-speaker 2 \
+  --checkpoint-epochs 5 --quality medium \
+  --base_lr 2e-4 --disable_auto_lr_scaling \
+  --ema-decay 0.9995 \
+  --max-phoneme-ids 400 \
+  --no-wavlm \
+  --audio-log-epochs 5 \
+  --warmup-epochs 3 --cosine-scheduler \
+  --mas-noise-start 0.01 --mas-noise-decay 2e-6 \
+  --mel-posterior-encoder \
+  --no-sdp --use-duration-discriminator \
+  --speaker-conditioned-encoder \
+  --default_root_dir /data/piper/output-vits2-6lang \
+  > /data/piper/training_vits2_6lang.log 2>&1 &
+```
+
+**設計根拠:**
+
+| パラメータ | 値 | 根拠 |
+|-----------|-----|------|
+| `--max_epochs 60` | VITS2の高速収束: VITS1の75epと同等品質を60epで達成 |
+| `--batch-size 32` | VITS2のパラメータ50%削減によりV100 16GBに余裕 (7-12GB使用) |
+| `--warmup-epochs 3` | 3-optimizer (G+D+DurDisc) の安定化。急激なLR変化を緩和 |
+| `--cosine-scheduler` | CosineAnnealingLRで訓練全体で意味のある減衰を提供 |
+| `--mas-noise-start 0.01` | VITS2標準。~5000 stepsで0に減衰 |
+| `--mel-posterior-encoder` | 513ch→80ch入力でモデルサイズ削減 |
+| `--no-sdp --use-duration-discriminator` | VITS2構成。DP+Duration Discで品質向上 |
+| `--speaker-conditioned-encoder` | Speaker embeddingをEncoder 3層目に注入 |
+| 実際の学習時間 | ~29時間 (VITS1の92時間から68%短縮) |
 
 ---
 
@@ -160,16 +244,71 @@ nohup /data/piper/.venv/bin/python -m piper_train \
   > training.log 2>&1 &
 ```
 
+### Template C: VITS2 事前学習
+
+```bash
+export WANDB_API_KEY=$(grep WANDB_API_KEY /data/piper/.env | cut -d= -f2) && \
+NCCL_DEBUG=WARN NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1 \
+nohup uv run python -m piper_train \
+  --dataset-dir <DATASET_DIR> \
+  --prosody-dim 16 \
+  --accelerator gpu --devices 4 --precision 32-true \
+  --max_epochs 60 --batch-size 32 --samples-per-speaker 2 \
+  --checkpoint-epochs 5 --quality medium \
+  --base_lr 2e-4 --disable_auto_lr_scaling \
+  --ema-decay 0.9995 \
+  --max-phoneme-ids 400 \
+  --no-wavlm \
+  --audio-log-epochs 5 \
+  --warmup-epochs 3 --cosine-scheduler \
+  --mas-noise-start 0.01 --mas-noise-decay 2e-6 \
+  --mel-posterior-encoder \
+  --no-sdp --use-duration-discriminator \
+  --speaker-conditioned-encoder \
+  --default_root_dir <OUTPUT_DIR> \
+  > training.log 2>&1 &
+```
+
+### Template D: VITS2 シングルスピーカー ファインチューニング
+
+```bash
+export WANDB_API_KEY=$(grep WANDB_API_KEY /data/piper/.env | cut -d= -f2) && \
+NCCL_DEBUG=WARN NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1 \
+nohup uv run python -m piper_train \
+  --dataset-dir <FINETUNE_DATASET> \
+  --prosody-dim 16 \
+  --accelerator gpu --devices 1 --precision 32-true \
+  --max_epochs 500 --batch-size 4 --samples-per-speaker 4 \
+  --checkpoint-epochs 50 --quality medium \
+  --base_lr 2e-5 --disable_auto_lr_scaling \
+  --ema-decay 0.9995 \
+  --max-phoneme-ids 400 \
+  --no-wavlm \
+  --val-every-n-epochs 50 \
+  --audio-log-epochs 50 \
+  --mas-noise-start 0.01 --mas-noise-decay 2e-6 \
+  --mel-posterior-encoder \
+  --no-sdp --speaker-conditioned-encoder \
+  --resume-from-multispeaker-checkpoint <VITS2_BASE_CHECKPOINT> \
+  --default_root_dir <OUTPUT_DIR> \
+  > training.log 2>&1 &
+```
+
 ### パラメータ差分
 
-| パラメータ | 事前学習 (A) | ファインチューニング (B) | 理由 |
-|-----------|-------------|----------------------|------|
-| `--devices` | 4 | 1 | 小データでDDPはオーバーヘッド過多 |
-| `--base_lr` | 2e-4 | 2e-5 | catastrophic forgetting防止 (1/10) |
-| `--batch-size` | 20 | 4 | 100発話 / 4 = 25 batches/epoch |
-| `--max_epochs` | データ量に応じて | 500 | 25x500=12,500 gradient steps |
-| `--freeze-dp` | なし | 自動有効化 | DP catastrophic forgetting防止 |
-| `--audio-log-epochs` | 5 | 50 | Validation頻度に合わせる |
+| パラメータ | VITS1事前学習 (A) | VITS1 FT (B) | VITS2事前学習 (C) | VITS2 FT (D) |
+|-----------|-----------------|-------------|-----------------|-------------|
+| `--devices` | 4 | 1 | 4 | 1 |
+| `--base_lr` | 2e-4 | 2e-5 | 2e-4 | 2e-5 |
+| `--batch-size` | 20 | 4 | 32 | 4 |
+| `--max_epochs` | 75 | 500 | 60 | 500 |
+| `--warmup-epochs` | - | - | 3 | - |
+| `--cosine-scheduler` | - | - | 有効 | - |
+| `--mel-posterior-encoder` | - | - | 有効 | 有効 |
+| `--no-sdp` | - | - | 有効 | 有効 |
+| `--use-duration-discriminator` | - | - | 有効 | - |
+| `--speaker-conditioned-encoder` | - | - | 有効 | 有効 |
+| `--freeze-dp` | - | 自動 | - | 自動 |
 
 ---
 
@@ -310,6 +449,52 @@ Rust によるONNX推論エンジン。ストリーミング、CUDA/CoreML/Direc
 
 **実装:** `src/rust/piper-core/`, `src/rust/piper-cli/`, `src/rust/piper-python/`
 
+### Noise-Scaled MAS (VITS2)
+
+MASコストマトリクスにガウスノイズを追加し、段階的に減衰。アライメント学習の安定化。デフォルト: 初期0.01、~5000 stepsで0に減衰。
+
+**CLIオプション:** `--mas-noise-start N` (デフォルト: 0.01), `--mas-noise-decay N` (デフォルト: 2e-6)
+**実装:** `vits/models.py` (`SynthesizerTrn.forward`), `vits/lightning.py`
+**テスト:** `tests/test_noise_scaled_mas.py`
+
+### Mel Posterior Encoder (VITS2)
+
+Linear Spectrogram (513ch) の代わりにMel Spectrogram (80ch) をPosterior Encoderへの入力として使用。モデルパラメータ削減。学習時のみ影響 (推論グラフにenc_qは含まれない)。
+
+**CLIオプション:** `--mel-posterior-encoder`
+**実装:** `vits/models.py` (`PosteriorEncoder`), `vits/lightning.py`
+**テスト:** `tests/test_mel_posterior_encoder.py`
+
+### Duration Discriminator V2 (VITS2)
+
+実際のMAS durationと予測DP durationを判別する追加判別器。3番目のoptimizerとして学習。`--no-sdp` と組み合わせて使用必須。
+
+**CLIオプション:** `--use-duration-discriminator`, `--no-sdp`
+**実装:** `vits/models.py` (`DurationDiscriminatorV2`), `vits/lightning.py`
+**テスト:** `tests/test_duration_discriminator.py`
+**注意:** SDP有効時は ValueError 発生
+
+### Speaker-Conditioned TextEncoder (VITS2)
+
+Speaker embeddingをTextEncoderの3層目に注入。マルチスピーカーモデルでspeaker固有の音韻ダイナミクスを学習。
+
+**CLIオプション:** `--speaker-conditioned-encoder`
+**実装:** `vits/models.py` (`TextEncoder`), `vits/lightning.py`
+**テスト:** `tests/test_speaker_conditioned_encoder.py`
+
+### CosineAnnealingLR + Linear Warmup (VITS2)
+
+ExponentialLRの代わりにCosineAnnealingLRを使用。Linear Warmupで3-optimizer動的を安定化。VITS2で `--warmup-epochs 3 --cosine-scheduler` 推奨。
+
+**CLIオプション:** `--cosine-scheduler`, `--warmup-epochs N` (デフォルト: 0)
+**実装:** `vits/lightning.py` (`_build_lr_schedulers()`)
+
+### Fused AdamW + DDP最適化 (VITS2)
+
+CUDA環境でFused AdamWを自動有効化 (~5-10%高速化)。DDP通信は `bucket_cap_mb=50` でPCIe allreduceを最適化。
+
+**実装:** `vits/lightning.py` (`configure_optimizers()`), `__main__.py`
+
 ---
 
 ## 重要なファイルパス
@@ -338,6 +523,19 @@ Rust によるONNX推論エンジン。ストリーミング、CUDA/CoreML/Direc
 | マルチリンガルIDマップ | `src/python/piper_train/phonemize/multilingual_id_map.py` |
 | バイリンガルPhonemizer | `src/python/piper_train/phonemize/bilingual.py` |
 | バイリンガルIDマップ | `src/python/piper_train/phonemize/bilingual_id_map.py` |
+| VITS2設計ドキュメント | `docs/research/vits2-implementation-plan.md` |
+
+### テスト
+
+| テスト | パス |
+|--------|------|
+| Noise-Scaled MAS | `src/python/tests/test_noise_scaled_mas.py` |
+| Duration Discriminator V2 | `src/python/tests/test_duration_discriminator.py` |
+| Mel Posterior Encoder | `src/python/tests/test_mel_posterior_encoder.py` |
+| Speaker-Conditioned Encoder | `src/python/tests/test_speaker_conditioned_encoder.py` |
+| gin_channels最適化 | `src/python/tests/test_gin_channels.py` |
+| Duration Predictor凍結 | `src/python/tests/test_freeze_dp.py` |
+| LRスケジューラ | `src/python/tests/test_lr_scheduler.py` |
 
 ### C# ソースコード
 
@@ -381,8 +579,9 @@ Rust によるONNX推論エンジン。ストリーミング、CUDA/CoreML/Direc
 
 | 用途 | パス | 状態 |
 |------|------|------|
-| **つくよみちゃん 6lang-v2** | `/data/piper/output-tsukuyomi-finetune-6lang-v2/tsukuyomi-6lang-v2-fixed.onnx` | 500 epoch完了 (2026-03-16) -- emb_lang後処理済み、全6言語テスト成功 |
-| **多言語 6lang ベースモデル** | `/data/piper/output-multilingual-6lang/` | 75 epoch完了 (2026-03-16) -- epoch=74-step=504712.ckpt、571話者 |
+| **VITS2 多言語 6lang** | `/data/piper/output-vits2-6lang/vits2-6lang-60epoch.onnx` | 60 epoch完了 (2026-03-20) -- 29時間、571話者、34MB FP16、全VITS2機能有効 |
+| **つくよみちゃん 6lang-v2 (VITS1)** | `/data/piper/output-tsukuyomi-finetune-6lang-v2/tsukuyomi-6lang-v2-fixed.onnx` | 500 epoch完了 (2026-03-16) -- emb_lang後処理済み、全6言語テスト成功 |
+| **多言語 6lang ベースモデル (VITS1)** | `/data/piper/output-multilingual-6lang/` | 75 epoch完了 (2026-03-16) -- epoch=74-step=504712.ckpt、571話者 |
 | **CSS10 JA 6lang** | `/data/piper/css10-ja-ljspeech/` -> `test/models/multilingual-test-medium.onnx` | 50 epoch完了 (2026-03-16) -- 6langベースから転移、6,841発話 |
 | バイリンガル JA+EN v4 (参照) | `/data/piper/output-bilingual-ja-en-v4/bilingual-ja-en-v4-150epoch.onnx` | 150 epoch完了 (75MB, 2026-03-04) -- EMA適用済み |
 
@@ -508,6 +707,7 @@ cat /path/to/test.jsonl | \
 
 | PR/Issue | 内容 | 状態 |
 |----------|------|------|
+| feat/vits2-upgrade | VITS2 Phase1-3 + バグ修正 + 学習高速化 | ブランチ (学習完了) |
 | PR #239 | FP16変換ツール | Merged |
 | PR #218 | 6言語マルチリンガル + C++ G2P | Merged |
 | PR #212 | WavLM Discriminator追加 | Open |
