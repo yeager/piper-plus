@@ -58,6 +58,9 @@ Systeme de synthese vocale neuronale (TTS) rapide et de haute qualite. Base sur 
 - **[WebAssembly](src/wasm/openjtalk-web/README.md)** — Fonctionne entierement dans le navigateur, sans serveur
 - **[Docker](docker/README.md)** — 5 images pour l'inference, l'entrainement, WebUI et C++
 - **PyPI** — `pip install piper-tts-plus`
+- **CLI C#** — .NET 8/9 multiplateforme, 6 langues multilingue, inference ONNX
+- **CLI Rust** — piper-plus/piper-plus-cli, streaming, CUDA/CoreML/DirectML
+- **[CLI Go](src/go/README.md)** — Serveur API HTTP, pooling de sessions, Docker, binaire unique
 
 ### Plateformes
 
@@ -69,6 +72,7 @@ Systeme de synthese vocale neuronale (TTS) rapide et de haute qualite. Base sur 
 | Web | WebAssembly | Chrome/Edge/Firefox/Safari |
 | C# (.NET) | x64 / ARM64 | .NET 8/9, Linux/macOS/Windows |
 | Rust | x64 / ARM64 | Linux/macOS/Windows, CUDA/CoreML/DirectML |
+| Go | x64 / ARM64 | Linux/macOS/Windows, API HTTP, Docker |
 
 ---
 
