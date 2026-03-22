@@ -7,22 +7,107 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-03-22
+
 ### Added
-- **M1: C++/Python音素化パイプライン同期** — プロソディマーク挿入(`[`/`]`/`#`)、文脈依存Nバリアント(`N_m`/`N_n`/`N_ng`/`N_uvular`)、疑問詞タイプEOSマーカー(`?!`/`?.`/`?~`)、BOS/EOS制御をC++に実装
-- **M1.5: OpenJTalkフロントエンド統一** — SourceForge版OpenJTalkバイナリ(`system()`呼び出し)からpyopenjtalk-plusのr9y9/open_jtalk Cライブラリ(API直接呼び出し)に移行。NJD後処理ルールをCにポート
-- **M2: ログ・テスト整合性** — Nバリアント/疑問詞マーカーの58ユニットテスト追加
-- **M3: インターフェース改善** — JSON prosody_features出力、日本語辞書境界修正
-- **M4: Docker回帰テスト** — 8テキスト比較テスト(8/8 PASS)、`Dockerfile.test`、CI統合
+
+#### C# (.NET) CLI
+- モデル名/エイリアス自動解決 + 未ダウンロード時自動ダウンロード (`--model tsukuyomi`)
+- `[[ phoneme ]]` インライン音素記法サポート
+- カスタム辞書の大小文字分離・単語境界マッチング (C++パリティ)
+- デフォルト辞書自動読み込み (`data/dictionaries/`)
+- DotNetG2P + DotNetG2P.MeCab による日本語G2P
+- DotNetG2P.English による英語G2P
+- 中国語PUAマッピング + トーンマーカー修正
+- `lid` (言語ID) テンソル対応
+- OpenJTalk辞書自動ダウンロード (`DictionaryManager`)
+- ストリーミング文分割 (`TextSplitter`)
+- カスタム辞書 JSON v1/v2 形式対応
+- NuGet パッケージ公開準備 (PiperPlus.Core, PiperPlus.Cli v0.1.0)
+
+#### Rust CLI
+- モデル名/エイリアス自動解決 + 自動ダウンロード (`find_model`, `resolve_model_path`)
+- `--download-model` / `--model-dir` オプション追加
+- `--quiet`, `--test-mode`, `--output-raw` オプション追加
+- `--sentence-silence`, `--phoneme-silence` オプション追加
+- `--list-models` 言語フィルタ (`--list-models ja`)
+- カスタム辞書CLI統合 (テキスト/バッチ/ストリーミング全パス)
+- 環境変数サポート (PIPER_DEFAULT_MODEL, PIPER_DEFAULT_CONFIG, PIPER_MODEL_DIR)
+- naist-jdic をデフォルトfeatureに変更 (辞書バンドル)
+- PyO3 0.22→0.23 アップグレード
+- crates.io パッケージ公開準備 (piper-plus, piper-plus-cli v0.1.0)
+
+#### CI/CD
+- Rust CLIバイナリビルド (PR時3OS、リリース時5ターゲット)
+- NuGet/crates.io 自動publishジョブ
+- GitHub Actions を Node.js 24 対応バージョンに全面更新
+- CI concurrencyグループ追加
+- ARM64 QEMU DNS修正
+
+#### 全言語共通
+- `--output-file` 省略時に `output.wav` デフォルト出力
+- Python モデルカタログ・ダウンロード機能追加
+
+### Fixed
+- C# ONNX推論の `lid` テンソル未送信バグ修正
+- C# 中国語音素マッピング修正 (「你好」3 IDs → 15 IDs、「你好，今天天气很好。」3 IDs → 51 IDs)
+- Rust 多言語推論で各言語に正しいPhonemizerを使用するよう修正
+- Rust JA辞書未発見時のPassthroughPhonemizerフォールバック追加
+- C# CLI統合テストの global.json rollForward修正
+- C# テストのstderrレースコンディション修正
+- リリースアーティファクト名衝突解消 (C#/Rust)
 
 ### Changed
+- Rustクレート名: piper-core→piper-plus, piper-cli→piper-plus-cli
+- C#/Rust バージョンはPyPIと独立管理 (v0.1.0)
+
+## [1.7.0] - 2026-03-18
+
+### 🚀 Major Features
+
+#### Added
+- **GPL-free 6言語マルチリンガルTTS** — 日本語・英語・中国語・スペイン語・フランス語・ポルトガル語の学習パイプライン + C++ G2P。espeak-ng (GPL) 不要で6言語推論が可能 (#218)
+- **WebブラウザTTS高速化基盤** — ベンチマーク・キャッシュ・WebGPU・ストリーミング対応。全97テストパス (#246)
+- **C++ CLI UX大幅改善** — `--text`による直接テキスト入力、`--list-models`/`--download-model`によるモデル管理、`--version`表示 (#244)
+- **C++/Python音素化パイプライン同期** — プロソディマーク挿入・文脈依存Nバリアント・疑問詞マーカー・BOS/EOS制御をC++に実装。OpenJTalkフロントエンドをpyopenjtalk-plus Cライブラリに統一。fullcontext完全一致を達成 (#229)
+- **Docker テスト強化・推論テスト統合** — 8テキスト比較テスト(8/8 PASS)、python-inferenceとwebui統合、CI回帰テスト (#230)
+- **ONNXエクスポートFP16デフォルト化** — `export_onnx`でFP16変換をデフォルト適用し、モデルサイズを約50%削減。`--no-fp16`フラグで無効化可能。LayerNormalization/Sigmoid/SoftmaxはFP32を維持し数値安定性を確保 (#239)
+
+#### Changed
+- **全ONNXモデルをFP16に統一 + モデル参照を6lang版に更新** — テストモデル・HuggingFace Spacesモデルを6lang FP16版に統一し、モデルカタログ(piper_plus_voices.json)を6lang版に更新。モデルサイズ約50%削減（77MB→39MB） (#256)
 - CMake ExternalProjectをpyopenjtalk-plus PyPI sdistベースに統一（全プラットフォーム共通）
 - OpenJTalkをスタンドアロンバイナリから静的ライブラリリンクに変更
 - `openjtalk_dictionary_manager.c`にバイナリ相対パスでの辞書検索を追加
+- ブランディング統一: "Piper TTS" → "piper-plus" (#232)
 
-### Fixed
+### 🎯 Performance
+
+- **ORT SessionOptions最適化** — ONNX Runtimeのセッションオプション調整で10-15%速度向上 (#250)
+- **WebUI ONNXセッションキャッシュ** — セッション再利用により83%高速化 (#242)
+
+### 🔧 Improvements
+
+#### Fixed
+- **C++マルチリンガルphonemizerの全6言語動作修正** — JA以外の5言語(EN/ZH/ES/FR/PT)が動作しない問題を修正。辞書ファイル(CMU/pypinyin)をビルド成果物に同梱し、辞書検索パスを3段階探索(モデルDir→exe相対→環境変数)に拡充。`--language`指定でラテン文字言語の検出精度向上、辞書未ロード時のgraceful degradation対応 (#254)
+- **config.jsonフォールバック検索の統一** — 全コンポーネントで一貫したconfig検索ロジック (#243)
+- **Windows学習互換性** — Windows環境での学習パイプライン修正 + prosodyモデル置換 (#232)
+- **Dockerビルドトリガー修正** — トリガーブランチをdevに修正 (#228)
+- **HuggingFace Spacesデプロイ修正** — Python API呼び出しに変更 (#224)
 - ExternalProject並列ダウンロードのレースコンディション修正
 - `phoneme_ids.cpp`の`interspersePad=false`パスで未知phonemeによるクラッシュを防止
 - CIテストをM1.5のアーキテクチャ変更(静的リンク)に適合
+
+### 📚 Documentation
+- **CLAUDE.md大幅リファクタリング** — 6言語対応完了に伴い約60%削減 (#252)
+- **ユーザビリティ改善ドキュメント** — クイックスタート再構成・Windows対応ガイド追加 (#241)
+- **ドキュメント全面整理・README刷新** (#225)
+- READMEにバッジ追加 & 事前学習済みモデルセクション追加 (#217)
+
+### 🧹 Maintenance
+- ルートPythonスクリプト整理 (#231)
+- Docker環境全面整理・CPU化 (#221)
+- 未使用workflow整理 & Python最低バージョン3.11化 (#227)
+- Gradio 6.9.0更新 (#226)
 
 ## [1.6.0] - 2026-02-11
 

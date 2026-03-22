@@ -44,7 +44,7 @@ jobs:
       build-path: ${{ steps.set-build-path.outputs.path }}
     
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@v6
       
       - name: Set artifact name
         id: set-artifact-name
@@ -65,7 +65,7 @@ jobs:
       # Cache for Linux dependencies
       - name: Cache Linux dependencies
         if: runner.os == 'Linux'
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             /usr/local/lib/libonnxruntime*
@@ -75,7 +75,7 @@ jobs:
       # Cache for macOS dependencies
       - name: Cache macOS dependencies
         if: runner.os == 'macOS'
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             /usr/local/lib/libonnxruntime*
@@ -300,14 +300,48 @@ jobs:
             # Check specific paths
             [ -d "build/pi/lib" ] && cp build/pi/lib/*.so* dist/piper/lib/ 2>/dev/null || true
             [ -d "build/p/src/piper_phonemize_external-build/install/lib" ] && cp build/p/src/piper_phonemize_external-build/install/lib/*.so* dist/piper/lib/ 2>/dev/null || true
+            # Copy ONNX Runtime from system install location (installed by build step)
+            cp /usr/local/lib/libonnxruntime*.so* dist/piper/lib/ 2>/dev/null || true
           elif [ "${{ runner.os }}" = "macOS" ]; then
             # Copy main libraries
             find build -name "*.dylib" -type f -exec cp {} dist/piper/lib/ \; 2>/dev/null || true
             # Check specific paths
             [ -d "build/pi/lib" ] && cp build/pi/lib/*.dylib dist/piper/lib/ 2>/dev/null || true
             [ -d "build/p/src/piper_phonemize_external-build/install/lib" ] && cp build/p/src/piper_phonemize_external-build/install/lib/*.dylib dist/piper/lib/ 2>/dev/null || true
+            # Copy ONNX Runtime from system install location (installed by build step)
+            cp /usr/local/lib/libonnxruntime*.dylib dist/piper/lib/ 2>/dev/null || true
           fi
-          
+
+          # Fix macOS rpath for relocatable distribution
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            echo "Fixing macOS rpath for relocatable distribution..."
+
+            # Fix piper binary rpath
+            if [ -f "dist/piper/bin/piper" ]; then
+              # Remove all existing rpath entries
+              for rpath in $(otool -l dist/piper/bin/piper | grep -A2 'LC_RPATH' | grep 'path ' | awk '{print $2}'); do
+                install_name_tool -delete_rpath "$rpath" dist/piper/bin/piper 2>/dev/null || true
+              done
+              # Add relative rpath
+              install_name_tool -add_rpath @executable_path/../lib dist/piper/bin/piper
+              echo "Fixed piper binary rpath"
+            fi
+
+            # Fix dylib install names to use @rpath
+            for dylib in dist/piper/lib/*.dylib; do
+              if [ -f "$dylib" ]; then
+                basename=$(basename "$dylib")
+                install_name_tool -id "@rpath/$basename" "$dylib" 2>/dev/null || true
+              fi
+            done
+
+            # Verify
+            echo "Verification - piper rpath entries:"
+            otool -l dist/piper/bin/piper | grep -A2 'LC_RPATH' || echo "No LC_RPATH found"
+            echo "Verification - piper linked libraries:"
+            otool -L dist/piper/bin/piper
+          fi
+
           # Copy OpenJTalk binary and data
           for oj_path in "build/oj/bin/open_jtalk" "build/open_jtalk" "build/bin/open_jtalk"; do
             if [ -f "$oj_path" ]; then
@@ -339,6 +373,12 @@ jobs:
             rm -f naist-jdic.tar.gz
             rm -rf open_jtalk_dic_utf_8-1.11
           fi
+
+          # Copy phonemizer dictionaries
+          mkdir -p dist/piper/share/piper/dicts
+          cp src/cpp/cmudict_data.json dist/piper/share/piper/dicts/ 2>/dev/null || true
+          cp src/cpp/pinyin_single.json dist/piper/share/piper/dicts/ 2>/dev/null || true
+          cp src/cpp/pinyin_phrases.json dist/piper/share/piper/dicts/ 2>/dev/null || true
 
           # Create archive
           tar -czf piper-${{ runner.os }}.tar.gz -C dist piper
@@ -431,6 +471,12 @@ jobs:
           Remove-Item -Force naist-jdic.tar.gz -ErrorAction SilentlyContinue
           Remove-Item -Recurse -Force open_jtalk_dic_utf_8-1.11 -ErrorAction SilentlyContinue
 
+          # Copy phonemizer dictionaries
+          New-Item -ItemType Directory -Force -Path dist/piper/share/piper/dicts
+          Copy-Item src/cpp/cmudict_data.json -Destination dist/piper/share/piper/dicts/ -ErrorAction SilentlyContinue
+          Copy-Item src/cpp/pinyin_single.json -Destination dist/piper/share/piper/dicts/ -ErrorAction SilentlyContinue
+          Copy-Item src/cpp/pinyin_phrases.json -Destination dist/piper/share/piper/dicts/ -ErrorAction SilentlyContinue
+
           # Create archive
           Compress-Archive -Path dist/piper -DestinationPath piper-${{ runner.os }}.zip
           
@@ -443,7 +489,7 @@ jobs:
       
       # Upload artifacts
       - name: Upload build artifact
-        uses: actions/upload-artifact@v4.6.0
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.set-artifact-name.outputs.name }}
           path: |
@@ -455,7 +501,7 @@ jobs:
       # Upload build logs on failure
       - name: Upload build logs on failure
         if: failure()
-        uses: actions/upload-artifact@v4.6.0
+        uses: actions/upload-artifact@v7
         with:
           name: build-logs-${{ runner.os }}-${{ github.sha }}
           path: |

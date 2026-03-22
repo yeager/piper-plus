@@ -1,0 +1,171 @@
+name: rust-tests
+
+on:
+  workflow_call:
+  pull_request:
+    branches: [ dev ]
+    paths:
+      - 'src/rust/**'
+      - '.github/workflows/rust-tests.yml'
+  push:
+    branches: [ dev ]
+    paths:
+      - 'src/rust/**'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: cargo check
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: src/rust
+    steps:
+    - uses: actions/checkout@v6
+    - uses: actions/setup-python@v6
+      with:
+        python-version: '3.12'
+    - name: Install ALSA dev (for rodio/playback feature)
+      run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+    - uses: dtolnay/rust-toolchain@stable
+    - uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: src/rust -> target
+    - run: cargo check --workspace --all-features
+
+  test:
+    name: tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest, windows-latest]
+    defaults:
+      run:
+        working-directory: src/rust
+    steps:
+    - uses: actions/checkout@v6
+    - uses: dtolnay/rust-toolchain@stable
+    - uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: src/rust -> target
+
+    - name: Run tests (default features)
+      run: cargo test -p piper-plus --no-fail-fast
+
+    - name: Run tests (naist-jdic)
+      run: cargo test -p piper-plus --features naist-jdic --no-fail-fast
+
+    - name: Run CLI check
+      run: cargo check -p piper-plus-cli
+
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: src/rust
+    steps:
+    - uses: actions/checkout@v6
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        components: rustfmt
+    - run: cargo fmt --all -- --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: src/rust
+    steps:
+    - uses: actions/checkout@v6
+    - uses: actions/setup-python@v6
+      with:
+        python-version: '3.12'
+    - name: Install ALSA dev (for rodio/playback feature)
+      run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        components: clippy
+    - uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: src/rust -> target
+    - run: cargo clippy --workspace --all-features -- -D warnings
+
+  python-bindings:
+    name: piper-plus-python build
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: src/rust/piper-python
+    steps:
+    - uses: actions/checkout@v6
+    - uses: dtolnay/rust-toolchain@stable
+    - uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: src/rust -> target
+    - uses: actions/setup-python@v6
+      with:
+        python-version: '3.12'
+    - run: pip install maturin
+    - run: maturin build --release
+
+  build:
+    name: build (${{ matrix.target }})
+    needs: [check, test]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            artifact: piper-plus-rs-cli-linux-x64
+            archive_ext: tar.gz
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact: piper-plus-rs-cli-osx-arm64
+            archive_ext: tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: piper-plus-rs-cli-win-x64
+            archive_ext: zip
+    defaults:
+      run:
+        working-directory: src/rust
+    steps:
+    - uses: actions/checkout@v6
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: ${{ matrix.target }}
+    - uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: src/rust -> target
+
+    - name: Build release binary
+      run: cargo build --release -p piper-plus-cli --target ${{ matrix.target }}
+
+    - name: Create archive (tar.gz)
+      if: matrix.archive_ext == 'tar.gz'
+      run: |
+        mkdir -p staging
+        cp target/${{ matrix.target }}/release/piper-plus-cli staging/
+        tar -czf ${{ matrix.artifact }}.tar.gz -C staging .
+
+    - name: Create archive (zip)
+      if: matrix.archive_ext == 'zip'
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Force staging
+        Copy-Item target/${{ matrix.target }}/release/piper-plus-cli.exe staging/
+        Compress-Archive -Path staging/* -DestinationPath ${{ matrix.artifact }}.zip
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ matrix.artifact }}
+        path: src/rust/${{ matrix.artifact }}.${{ matrix.archive_ext }}
+        retention-days: 7

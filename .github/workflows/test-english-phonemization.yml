@@ -28,10 +28,10 @@ jobs:
         python-version: ["3.11"]
     
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
     
     - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v5
+      uses: actions/setup-python@v6
       with:
         python-version: ${{ matrix.python-version }}
     
@@ -73,17 +73,17 @@ jobs:
       run: |
         cd src/python_run
         # Download a small test model if needed
-        if [ ! -f "../../test/models/test_voice.onnx" ]; then
+        if [ ! -f "../../test/models/multilingual-test-medium.onnx" ]; then
           echo "Test model not found, skipping CLI test"
         else
-          echo "Hello world" | python -m piper --model ../../test/models/test_voice.onnx --output_file test_output.wav
+          echo "Hello world" | python -m piper --model ../../test/models/multilingual-test-medium.onnx --output_file test_output.wav
           # Verify output file was created
           test -f test_output.wav && echo "CLI test passed"
         fi
     
     - name: Upload test results
       if: always()
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: english-phonemization-test-results-${{ matrix.os }}
         path: |

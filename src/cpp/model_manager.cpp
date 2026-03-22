@@ -49,48 +49,42 @@ static const char* PIPER_PLUS_CATALOG_JSON = R"JSON(
         "source": "piper-plus",
         "repo": "ayousanz/piper-plus-tsukuyomi-chan",
         "files": {
-            "tsukuyomi-wavlm-300epoch.onnx": {
-                "size_bytes": 77594624,
+            "tsukuyomi-chan-6lang-fp16.onnx": {
+                "size_bytes": 39216913,
                 "md5_digest": ""
             },
             "config.json": {
-                "size_bytes": 3072,
+                "size_bytes": 8568,
                 "md5_digest": ""
             }
         },
         "aliases": ["tsukuyomi", "tsukuyomi-chan", "ja-tsukuyomi"],
-        "description": "Tsukuyomi-chan Japanese TTS model trained with WavLM discriminator (300 epochs)"
+        "description": "Tsukuyomi-chan 6-language TTS model fine-tuned from multilingual base (FP16)"
     },
-    "ja_JP-moe-speech-20speakers-medium": {
-        "key": "ja_JP-moe-speech-20speakers-medium",
-        "name": "moe-speech-20speakers",
+    "ja_JP-css10-6lang-medium": {
+        "key": "ja_JP-css10-6lang-medium",
+        "name": "css10-6lang",
         "language": {
             "code": "ja_JP", "family": "ja",
             "name_native": "日本語", "name_english": "Japanese"
         },
         "quality": "medium",
-        "num_speakers": 20,
-        "speaker_id_map": {
-            "speaker_0": 0, "speaker_1": 1, "speaker_2": 2, "speaker_3": 3,
-            "speaker_4": 4, "speaker_5": 5, "speaker_6": 6, "speaker_7": 7,
-            "speaker_8": 8, "speaker_9": 9, "speaker_10": 10, "speaker_11": 11,
-            "speaker_12": 12, "speaker_13": 13, "speaker_14": 14, "speaker_15": 15,
-            "speaker_16": 16, "speaker_17": 17, "speaker_18": 18, "speaker_19": 19
-        },
+        "num_speakers": 1,
+        "speaker_id_map": {},
         "source": "piper-plus",
-        "repo": "ayousanz/piper-plus-base",
+        "repo": "ayousanz/piper-plus-css10-ja-6lang",
         "files": {
-            "moe-speech-20speakers-v2.onnx": {
-                "size_bytes": 77594624,
+            "css10-ja-6lang-fp16.onnx": {
+                "size_bytes": 39414515,
                 "md5_digest": ""
             },
             "config.json": {
-                "size_bytes": 4096,
+                "size_bytes": 8966,
                 "md5_digest": ""
             }
         },
-        "aliases": ["moe-speech", "moe-20speakers", "ja-base", "ja-20speakers"],
-        "description": "Japanese multi-speaker base model (20 speakers) with VITS + Prosody features"
+        "aliases": ["css10", "css10-6lang", "css10-ja", "ja-css10"],
+        "description": "CSS10 Japanese 6-language TTS model fine-tuned from multilingual base (FP16, 6841 utterances)"
     }
 }
 )JSON";
@@ -102,10 +96,10 @@ static const char* PIPER_PLUS_CATALOG_JSON = R"JSON(
 // Get the directory containing the running executable
 static fs::path getExeDir() {
 #ifdef _WIN32
-    char buf[MAX_PATH] = {0};
-    DWORD len = GetModuleFileNameA(nullptr, buf, sizeof(buf));
-    if (len > 0 && len < sizeof(buf)) {
-        return fs::path(buf).parent_path();
+    wchar_t wbuf[MAX_PATH] = {0};
+    DWORD len = GetModuleFileNameW(nullptr, wbuf, MAX_PATH);
+    if (len > 0 && len < MAX_PATH) {
+        return fs::path(wbuf).parent_path();
     }
 #elif defined(__APPLE__)
     char buf[PATH_MAX] = {0};
@@ -193,13 +187,15 @@ static std::optional<fs::path> findUpstreamVoicesJson() {
     return std::nullopt;
 }
 
-// Shell-safe for URLs: reject backslashes (Unix shell escape character).
-// Only allow alphanumerics, hyphens, underscores, dots, forward slashes, and colons.
+// Shell-safe for URLs: allowlist approach.
+// Only allow alphanumerics, hyphens, underscores, dots, forward slashes,
+// colons, and percent (for URL-encoded characters).
+// Explicitly rejects shell metacharacters: ' $ ` ( ) ; | & < > ~ # ! { } etc.
 static bool isSafeForShell(const std::string& s) {
     for (char c : s) {
         if (!std::isalnum(static_cast<unsigned char>(c)) &&
             c != '-' && c != '_' && c != '.' && c != '/' &&
-            c != ':') {
+            c != ':' && c != '%') {
             return false;
         }
     }
@@ -207,6 +203,7 @@ static bool isSafeForShell(const std::string& s) {
 }
 
 // Shell-safe for file paths: allows backslashes for Windows path separators.
+// Explicitly rejects shell metacharacters: ' $ ` ( ) ; | & < > ~ # ! { } etc.
 static bool isSafeForShellPath(const std::string& s) {
     for (char c : s) {
         if (!std::isalnum(static_cast<unsigned char>(c)) &&
@@ -467,7 +464,7 @@ void listModels(const std::string& languageFilter) {
             std::cerr << " [" << voice.languageCode << "]:" << std::endl;
         }
 
-        // Format: key  [source]  N speaker(s)  quality
+        // Format: key  [source]  N speaker(s)  quality  (aliases)
         std::cerr << "    " << voice.key;
 
         // Pad to 40 chars for alignment
@@ -481,7 +478,17 @@ void listModels(const std::string& languageFilter) {
         std::cerr << "[" << voice.source << "]  ";
         std::cerr << voice.numSpeakers << " speaker"
                   << (voice.numSpeakers != 1 ? "s" : "") << "   ";
-        std::cerr << voice.quality << std::endl;
+        std::cerr << voice.quality;
+
+        if (!voice.aliases.empty()) {
+            std::cerr << "   (";
+            for (size_t i = 0; i < voice.aliases.size(); ++i) {
+                if (i > 0) std::cerr << ", ";
+                std::cerr << voice.aliases[i];
+            }
+            std::cerr << ")";
+        }
+        std::cerr << std::endl;
     }
 
     std::cerr << std::endl;
@@ -586,6 +593,30 @@ bool downloadModel(const std::string& modelName,
     }
 
     return allOk;
+}
+
+std::optional<fs::path> resolveModelPath(
+    const std::string& nameOrAlias,
+    const fs::path& modelDir) {
+    auto maybeVoice = findVoice(nameOrAlias);
+    if (!maybeVoice) {
+        return std::nullopt;
+    }
+
+    const VoiceInfo& voice = maybeVoice.value();
+
+    // Find the .onnx file in the voice's file list
+    for (const auto& file : voice.files) {
+        fs::path fn = fs::path(file.relativePath).filename();
+        if (fn.extension() == ".onnx") {
+            fs::path candidate = modelDir / fn;
+            if (fs::exists(candidate)) {
+                return candidate;
+            }
+        }
+    }
+
+    return std::nullopt;
 }
 
 } // namespace piper

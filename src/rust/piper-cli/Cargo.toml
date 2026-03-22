@@ -1,0 +1,19 @@
+[package]
+name = "piper-plus-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "CLI tool for Piper Plus neural text-to-speech synthesis"
+
+[dependencies]
+piper-plus = { path = "../piper-core", version = "0.1.0" }
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

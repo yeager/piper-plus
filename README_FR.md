@@ -9,7 +9,7 @@
 [![Hugging Face Demo](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Demo-blue)](https://huggingface.co/spaces/ayousanz/piper-plus-demo)
 [![Hugging Face Model](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Model-orange)](https://huggingface.co/ayousanz/piper-plus-base)
 
-Systeme de synthese vocale neuronale (TTS) rapide et de haute qualite. Base sur l'architecture [VITS](https://github.com/jaywalnut310/vits/), il prend en charge la synthese vocale multi-locuteurs en japonais et en anglais. Fork de [Piper](https://github.com/rhasspy/piper) avec un support japonais, une qualite audio et des fonctionnalites d'entrainement considerablement ameliores.
+Systeme de synthese vocale neuronale (TTS) rapide et de haute qualite. Base sur l'architecture [VITS](https://github.com/jaywalnut310/vits/), il prend en charge la synthese vocale multi-locuteurs en 6 langues (japonais, anglais, chinois mandarin, espagnol, francais, portugais). Fork de [Piper](https://github.com/rhasspy/piper) avec un support japonais, une qualite audio et des fonctionnalites d'entrainement considerablement ameliores.
 
 **[Demo Hugging Face](https://huggingface.co/spaces/ayousanz/piper-plus-demo)** | **[Demo WebAssembly](https://ayutaz.github.io/piper-plus/)** (fonctionne dans le navigateur, sans serveur)
 
@@ -35,8 +35,9 @@ Systeme de synthese vocale neuronale (TTS) rapide et de haute qualite. Base sur 
 
 - **TTS japonais** — Integration OpenJTalk, caracteristiques prosodiques (A1/A2/A3), marqueurs interrogatifs (#204), variantes contextuelles du "N" (#207)
 - **TTS anglais** — G2P sans GPL ([g2p-en](https://github.com/Kyubyong/g2p), Apache-2.0), pas de dependance a espeak-ng
-- **Multi-locuteurs** — 20+ locuteurs, SpeakerBalancedBatchSampler
-- **Dictionnaire personnalise** — 200+ termes techniques integres — [Guide](docs/features/custom_dictionary.md)
+- **Multilingue 6 langues** — Japonais, anglais, chinois mandarin, espagnol, francais, portugais (ja=0, en=1, zh=2, es=3, fr=4, pt=5)
+- **Multi-locuteurs** — 571 locuteurs dans le modele de base 6 langues, SpeakerBalancedBatchSampler
+- **Dictionnaire personnalise** — 200+ termes techniques integres
 - **Saisie phonemique** — Specification directe avec la notation `[[ phonemes ]]` — [Guide](docs/features/phoneme-input.md)
 
 ### Entrainement
@@ -52,6 +53,8 @@ Systeme de synthese vocale neuronale (TTS) rapide et de haute qualite. Base sur 
 
 - **[WebUI (Gradio)](docs/features/webui.md)** — Inference et entrainement, compatible Docker
 - **CLI C++** — Streaming, inference CUDA, sortie de timing phonemique, dictionnaire personnalise
+- **CLI C#** — .NET 8/9 multiplateforme, 6 langues multilingue, inference ONNX
+- **CLI Rust** — piper-plus/piper-plus-cli, streaming, CUDA/CoreML/DirectML, telechargement automatique des dictionnaires
 - **[WebAssembly](src/wasm/openjtalk-web/README.md)** — Fonctionne entierement dans le navigateur, sans serveur
 - **[Docker](docker/README.md)** — 5 images pour l'inference, l'entrainement, WebUI et C++
 - **PyPI** — `pip install piper-tts-plus`
@@ -64,6 +67,8 @@ Systeme de synthese vocale neuronale (TTS) rapide et de haute qualite. Base sur 
 | macOS | ARM64 (Apple Silicon) uniquement | M1/M2/M3+ |
 | Windows | x64 | Support complet |
 | Web | WebAssembly | Chrome/Edge/Firefox/Safari |
+| C# (.NET) | x64 / ARM64 | .NET 8/9, Linux/macOS/Windows |
+| Rust | x64 / ARM64 | Linux/macOS/Windows, CUDA/CoreML/DirectML |
 
 ---
 
@@ -108,7 +113,7 @@ Telecharger depuis [GitHub Releases](https://github.com/ayutaz/piper-plus/releas
 
 ```sh
 echo 'Welcome to the world of speech synthesis!' | \
-  ./piper --model en_US-lessac-medium.onnx --output_file welcome.wav
+  ./bin/piper --model en_US-lessac-medium.onnx --output_file welcome.wav
 ```
 
 ### Docker
@@ -176,6 +181,34 @@ Egalement disponible sur PyPI :
 pip install piper-tts-plus
 ```
 
+### Installation depuis les gestionnaires de paquets
+
+**Python (PyPI) :**
+```bash
+pip install piper-tts-plus
+```
+
+**C# CLI (Outil global .NET) :**
+```bash
+dotnet tool install -g PiperPlus.Cli
+```
+
+**Rust CLI (crates.io) :**
+```bash
+cargo install piper-plus-cli
+```
+
+**Bibliotheque C# (NuGet) :**
+```bash
+dotnet add package PiperPlus.Core
+```
+
+**Bibliotheque Rust (crates.io) :**
+```toml
+[dependencies]
+piper-plus = "0.1.0"
+```
+
 ### Construction depuis les sources (C++)
 
 ```bash
@@ -192,6 +225,89 @@ Prerequis : compilateur C++17, CMake 3.13+
 - **Windows** : voir le [Guide d'installation Windows](docs/getting-started/windows-setup.md)
 - **macOS** : les dependances sont telechargees automatiquement
 
+### Construction depuis les sources (C#)
+
+```bash
+# Construction du CLI C#
+dotnet build src/csharp/PiperPlus.sln -c Release
+# Tests
+dotnet test src/csharp/PiperPlus.Core.Tests/
+```
+
+Prerequis : .NET 8 SDK ou superieur
+
+#### Exemples d'utilisation du CLI C#
+
+```bash
+# Inference par nom de modele (telechargement automatique, sortie par defaut : output.wav)
+piper-plus --model tsukuyomi --text "こんにちは" --language ja
+
+# Anglais
+piper-plus --model model.onnx --text "Hello world" --language en
+
+# Multilingue (detection automatique de la langue)
+piper-plus --model model.onnx --text "こんにちはHello你好" --language ja-en-zh
+
+# Notation phonemique en ligne (specification directe des phonemes dans le texte)
+piper-plus --model model.onnx --text "Hello [[ h ə l oʊ ]] world" --language en
+
+# Streaming (sortie PCM sequentielle par phrase)
+piper-plus --model model.onnx --text "Premiere phrase. Deuxieme phrase." --language fr --streaming | aplay -r 22050 -f S16_LE
+
+# Dictionnaire personnalise (JSON v1/v2 ou TSV)
+piper-plus --model model.onnx --text "AI技術" --language ja --custom-dict my_dict.json
+
+# Telechargement de modeles
+piper-plus --download-model tsukuyomi
+piper-plus --list-models ja
+
+# Mode test (verification des phoneme IDs sans inference ONNX)
+piper-plus --model model.onnx --test-mode --text "こんにちは" --language ja
+```
+
+### Construction depuis les sources (Rust)
+
+```bash
+# Construction du CLI Rust
+cargo build --release -p piper-plus-cli
+# Tests
+cargo test -p piper-plus
+```
+
+Prerequis : Rust 1.70+, cargo
+
+#### Exemples d'utilisation du CLI Rust
+
+```bash
+# Inference par nom de modele (telechargement automatique)
+piper-plus-cli --model tsukuyomi --text "こんにちは" --language ja
+
+# Anglais
+piper-plus-cli --model model.onnx --text "Hello world" --language en
+
+# Telechargement et gestion de modeles
+piper-plus-cli --download-model tsukuyomi
+piper-plus-cli --list-models ja
+
+# Streaming (synthese sequentielle par phrase)
+piper-plus-cli --model model.onnx --text "Premiere phrase. Deuxieme phrase." --stream --output-dir chunks/
+
+# Dictionnaire personnalise
+piper-plus-cli --model model.onnx --text "AI技術" --custom-dict my_dict.json
+
+# Inference GPU
+piper-plus-cli --model model.onnx --text "Hello" --device cuda
+
+# Mode test et mode silencieux
+piper-plus-cli --model model.onnx --test-mode --text "hello" --language en
+piper-plus-cli --model model.onnx --text "hello" --language en --quiet
+
+# Sortie PCM brute (sans en-tete WAV)
+piper-plus-cli --model model.onnx --text "hello" --language en --output-raw | aplay -r 22050 -f S16_LE
+```
+
+> **Note :** Le CLI C# s'installe via `dotnet tool install -g PiperPlus.Cli` et le CLI Rust via `cargo install piper-plus-cli`. Les deux prennent en charge 6 langues, les dictionnaires personnalises et le streaming.
+
 ---
 
 ## Utilisation
@@ -200,25 +316,25 @@ Prerequis : compilateur C++17, CMake 3.13+
 
 ```sh
 # Utilisation de base
-echo "こんにちは" | ./piper --model ja_model.onnx --output_file output.wav
+echo "こんにちは" | ./bin/piper --model ja_model.onnx --output_file output.wav
 
 # Streaming (faible latence)
-echo "Texte long..." | ./piper --model ja_model.onnx --output_file output.wav --streaming
+echo "Texte long..." | ./bin/piper --model ja_model.onnx --output_file output.wav --streaming
 
 # Inference GPU
-echo "Hello" | ./piper --model en_model.onnx --use-cuda --output_file output.wav
+echo "Hello" | ./bin/piper --model en_model.onnx --use-cuda --output_file output.wav
 
 # Sortie de timing phonemique (pour lip-sync, sous-titres)
-echo "Hello world" | ./piper --model en_model.onnx -f speech.wav --output-timing timing.json
+echo "Hello world" | ./bin/piper --model en_model.onnx -f speech.wav --output-timing timing.json
 
 # Dictionnaire personnalise
-echo "DockerとGitHubを使います" | ./piper --model ja_model.onnx --custom-dict my_dict.json -f output.wav
+echo "DockerとGitHubを使います" | ./bin/piper --model ja_model.onnx --custom-dict my_dict.json -f output.wav
 
 # Saisie phonemique en ligne
-echo 'Hello [[ h ə l oʊ ]] world' | ./piper --model en_model.onnx -f output.wav
+echo 'Hello [[ h ə l oʊ ]] world' | ./bin/piper --model en_model.onnx -f output.wav
 
 # Saisie de phonemes bruts
-echo 'h ə l oʊ _ w ɜː l d' | ./piper --model en_model.onnx --raw-phonemes -f output.wav
+echo 'h ə l oʊ _ w ɜː l d' | ./bin/piper --model en_model.onnx --raw-phonemes -f output.wav
 ```
 
 Options principales :
@@ -284,14 +400,20 @@ uv run python -m piper_train \
   --ema-decay 0.9995
 ```
 
-Le multi-GPU configure automatiquement le DDP (Distributed Data Parallel). Les variables d'environnement NCCL sont requises. Voir le [Guide multi-GPU](docs/guides/training/multi-gpu-training.md).
+Le multi-GPU configure automatiquement le DDP (Distributed Data Parallel). Les variables d'environnement NCCL sont requises. Voir le Guide multi-GPU pour plus de details.
 
 ### Export ONNX
 
+La conversion FP16 est appliquee par defaut, reduisant la taille du modele d'environ 50%. Utilisez `--no-fp16` pour desactiver.
+
 ```bash
-# Modele standard
+# Modele standard (FP16 par defaut)
 CUDA_VISIBLE_DEVICES="" uv run python -m piper_train.export_onnx \
   /path/to/checkpoint.ckpt /path/to/output.onnx
+
+# Modele sans FP16
+CUDA_VISIBLE_DEVICES="" uv run python -m piper_train.export_onnx \
+  --no-fp16 /path/to/checkpoint.ckpt /path/to/output.onnx
 
 # Modele WavLM (--stochastic requis)
 CUDA_VISIBLE_DEVICES="" uv run python -m piper_train.export_onnx \
@@ -302,6 +424,7 @@ CUDA_VISIBLE_DEVICES="" uv run python -m piper_train.export_onnx \
 
 - `--resume_from_checkpoint` — Reprendre l'entrainement depuis un checkpoint
 - `--resume_from_single_speaker_checkpoint` — Convertir un modele mono-locuteur en multi-locuteurs
+- `--resume-from-multispeaker-checkpoint` — Transfert multi-locuteurs vers mono-locuteur (active automatiquement `--freeze-dp`)
 
 ### Evaluation vocale
 
@@ -311,20 +434,34 @@ Des outils d'evaluation MCD, PESQ et UTMOS sont disponibles dans `scripts/evalua
 
 ## Modeles pre-entraines
 
-Des modeles de base pour le fine-tuning TTS japonais sont disponibles sur Hugging Face.
+Des modeles de synthese vocale pour l'inference et le fine-tuning sont disponibles sur Hugging Face.
 
-| Modele | Description | Licence |
-|---|---|---|
-| [piper-plus-base](https://huggingface.co/ayousanz/piper-plus-base) | Modele de base TTS japonais (VITS + WavLM + Prosody) | CC-BY-SA-4.0 |
-| [piper-plus-tsukuyomi-chan](https://huggingface.co/ayousanz/piper-plus-tsukuyomi-chan) | Modele fine-tune Tsukuyomi-chan | Voir la fiche modele |
+**Modeles pour l'inference (prets a l'emploi) :**
 
-**Caracteristiques de piper-plus-base :**
+| Modele | Langues | Locuteurs | Description | Telechargement |
+|---|---|---|---|---|
+| Tsukuyomi-chan 6lang | JA/EN/ZH/ES/FR/PT | 1 | Voix Tsukuyomi-chan, 6 langues, FP16 | [HuggingFace](https://huggingface.co/ayousanz/piper-plus-tsukuyomi-chan) |
+| CSS10 Japonais 6lang | JA/EN/ZH/ES/FR/PT | 1 | Voix CSS10 japonaise, 6 langues, FP16 | [HuggingFace](https://huggingface.co/ayousanz/piper-plus-css10-ja-6lang) |
 
-- Architecture : VITS + WavLM Discriminator
-- Donnees d'entrainement : 60 164 enonces (20 locuteurs)
+**Modeles de base pour l'entrainement (fine-tuning) :**
+
+| Modele | Langues | Locuteurs | Description | Telechargement |
+|---|---|---|---|---|
+| Modele de base 6 langues | JA/EN/ZH/ES/FR/PT | 571 | Pre-entraine multilingue (508 187 enonces, VITS + Prosody) | [HuggingFace](https://huggingface.co/ayousanz/piper-plus-base) |
+
+**Caracteristiques du modele de base 6 langues :**
+
+- Architecture : VITS + Prosody Features
+- Donnees d'entrainement : 508 187 enonces (571 locuteurs, 6 langues)
+- Langues : ja (20 locuteurs), en (310 locuteurs), zh (142 locuteurs), es (63 locuteurs), fr (28 locuteurs), pt (8 locuteurs)
+- Codes de langue : ja=0, en=1, zh=2, es=3, fr=4, pt=5
 - Taux d'echantillonnage : 22 050 Hz
+- Symboles : 173 phonemes
+- Entrainement : 75 epochs, ~282K gradient steps, ~92 heures (4x V100)
 - Caracteristiques prosodiques : informations prosodiques A1/A2/A3
-- Phonemes etendus : marqueurs interrogatifs, variantes contextuelles du "N" (65 phonemes)
+- Phonemes etendus : marqueurs interrogatifs, variantes contextuelles du "N"
+
+> **Note :** piper-plus integre des extensions architecturales proprietaires (embeddings multilingues, Prosodie A1/A2/A3, 173 symboles) qui le rendent incompatible avec les checkpoints/modeles ONNX de Piper upstream. Veuillez utiliser les modeles specifiques a piper-plus.
 
 Les checkpoints Piper upstream sont egalement disponibles : [piper-checkpoints](https://huggingface.co/datasets/rhasspy/piper-checkpoints/tree/main)
 
@@ -342,7 +479,7 @@ Synthese vocale japonaise de haute qualite avec integration OpenJTalk. Le dictio
 | `PIPER_AUTO_DOWNLOAD_DICT` | `0` pour desactiver le telechargement automatique |
 | `PIPER_OFFLINE_MODE` | `1` pour le mode hors ligne |
 
-Voir le [Guide d'utilisation japonais](docs/guides/japanese/japanese-usage.md) et la [Reference de mappage phonemique](docs/api-reference/phoneme-mapping.md).
+Voir le Guide d'utilisation japonais et la [Reference de mappage phonemique](docs/api-reference/phoneme-mapping.md).
 
 ---
 
@@ -408,11 +545,11 @@ Chaque voix necessite un fichier `.onnx` et un fichier de configuration `.onnx.j
 
 | Categorie | Liens |
 |---|---|
-| TTS japonais | [Guide d'utilisation japonais](docs/guides/japanese/japanese-usage.md) |
-| Entrainement | [Guide d'entrainement](docs/guides/training/training-guide.md) · [Multi-GPU](docs/guides/training/multi-gpu-training.md) |
+| TTS japonais | Guide d'utilisation japonais |
+| Entrainement | [Guide d'entrainement](docs/guides/training/training-guide.md) · Multi-GPU |
 | API | [Mappage phonemique](docs/api-reference/phoneme-mapping.md) · [Variables d'environnement](docs/getting-started/environment-variables.md) |
-| Fonctionnalites | [WebUI](docs/features/webui.md) · [CLI ameliore](docs/features/cli-enhancements.md) · [Streaming](docs/features/streaming-mode.md) |
-| Configuration | [Demarrage rapide (japonais)](docs/guides/japanese/japanese-usage.md) · [Windows](docs/getting-started/windows-setup.md) · [Depannage](docs/getting-started/troubleshooting.md) |
+| Fonctionnalites | [WebUI](docs/features/webui.md) · CLI ameliore · Streaming |
+| Configuration | Demarrage rapide (japonais) · [Windows](docs/getting-started/windows-setup.md) · [Depannage](docs/getting-started/troubleshooting.md) |
 | Docker | [Environnements Docker](docker/README.md) |
 | WebAssembly | [Details techniques](src/wasm/openjtalk-web/README.md) |
 
@@ -423,5 +560,3 @@ Voir [CONTRIBUTING.md](CONTRIBUTING.md) pour les directives.
 ## Journal des modifications
 
 Voir [CHANGELOG.md](CHANGELOG.md) pour l'historique des versions.
-
-[![A library from the Open Home Foundation](https://www.openhomefoundation.org/badges/ohf-library.png)](https://www.openhomefoundation.org/)

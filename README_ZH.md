@@ -9,7 +9,7 @@
 [![Hugging Face Demo](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Demo-blue)](https://huggingface.co/spaces/ayousanz/piper-plus-demo)
 [![Hugging Face Model](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Model-orange)](https://huggingface.co/ayousanz/piper-plus-base)
 
-快速、高质量的神经网络文本转语音 (TTS) 系统。基于 [VITS](https://github.com/jaywalnut310/vits/) 架构，支持日语和英语的多说话人语音合成。本项目是 [Piper](https://github.com/rhasspy/piper) 的分支，大幅增强了日语支持、音质和训练功能。
+快速、高质量的神经网络文本转语音 (TTS) 系统。基于 [VITS](https://github.com/jaywalnut310/vits/) 架构，支持6种语言（日语、英语、普通话、西班牙语、法语、葡萄牙语）的多说话人语音合成。本项目是 [Piper](https://github.com/rhasspy/piper) 的分支，大幅增强了日语支持、音质和训练功能。
 
 **[Hugging Face 演示](https://huggingface.co/spaces/ayousanz/piper-plus-demo)** | **[WebAssembly 演示](https://ayutaz.github.io/piper-plus/)** (浏览器运行，无需服务器)
 
@@ -33,10 +33,11 @@
 
 ### 语音合成
 
+- **6语言支持** — 日语、英语、普通话、西班牙语、法语、葡萄牙语 (ja=0, en=1, zh=2, es=3, fr=4, pt=5)
 - **日语 TTS** — OpenJTalk 集成、韵律特征 (A1/A2/A3)、疑问标记 (#204)、上下文相关「ん」变体 (#207)
 - **英语 TTS** — 无 GPL 依赖的 G2P ([g2p-en](https://github.com/Kyubyong/g2p), Apache-2.0)，无需 espeak-ng
-- **多说话人** — 支持 20+ 说话人，SpeakerBalancedBatchSampler
-- **自定义词典** — 内置 200+ 技术术语发音词典 — [指南](docs/features/custom_dictionary.md)
+- **多说话人** — 571说话人的6语言基础模型，SpeakerBalancedBatchSampler，语言均衡采样自动启用
+- **自定义词典** — 内置 200+ 技术术语发音词典
 - **音素输入** — 使用 `[[ phonemes ]]` 标记直接指定音素 — [指南](docs/features/phoneme-input.md)
 
 ### 训练
@@ -55,6 +56,8 @@
 - **[WebAssembly](src/wasm/openjtalk-web/README.md)** — 完全在浏览器中运行，无需服务器
 - **[Docker](docker/README.md)** — 提供推理、训练、WebUI、C++ 共 5 个镜像
 - **PyPI** — `pip install piper-tts-plus`
+- **C# CLI** — .NET 8/9 跨平台，6语言多语言支持，ONNX 推理
+- **Rust CLI** — piper-plus/piper-plus-cli，流式处理，CUDA/CoreML/DirectML 支持，词典自动下载
 
 ### 平台
 
@@ -64,10 +67,59 @@
 | macOS | ARM64 (Apple Silicon) 仅限 | M1/M2/M3+ |
 | Windows | x64 | 完整支持 |
 | Web | WebAssembly | Chrome/Edge/Firefox/Safari |
+| C# (.NET) | x64 / ARM64 | .NET 8/9，Linux/macOS/Windows |
+| Rust | x64 / ARM64 | Linux/macOS/Windows，CUDA/CoreML/DirectML |
 
 ---
 
 ## 快速入门
+
+### 预构建二进制文件（无需构建）
+
+从 [GitHub Releases](https://github.com/ayutaz/piper-plus/releases) 下载预构建二进制文件，即可立即开始语音合成。
+
+**1. 下载二进制文件**
+
+根据您的操作系统下载并解压。
+
+**Windows (PowerShell):**
+
+```powershell
+Invoke-WebRequest -Uri "https://github.com/ayutaz/piper-plus/releases/latest/download/piper-windows-x64.zip" -OutFile piper.zip
+Expand-Archive piper.zip -DestinationPath .
+cd piper
+```
+
+**macOS (Apple Silicon):**
+
+```bash
+curl -L -o piper.tar.gz https://github.com/ayutaz/piper-plus/releases/latest/download/piper-macos-arm64.tar.gz
+tar xzf piper.tar.gz
+cd piper
+xattr -cr .
+```
+
+**Linux (x86_64):**
+
+```bash
+curl -L -o piper.tar.gz https://github.com/ayutaz/piper-plus/releases/latest/download/piper-linux-x64.tar.gz
+tar xzf piper.tar.gz
+cd piper
+```
+
+**2. 下载模型并生成语音**
+
+```sh
+# 下载 Tsukuyomi-chan 模型
+./bin/piper --download-model tsukuyomi
+
+# 生成语音（只需模型名 — 自动解析已下载的模型）
+./bin/piper --model tsukuyomi --text "こんにちは、今日は良い天気ですね。" --output_file output.wav
+```
+
+> **关于 Windows cmd 代码页：** `--text` 选项内部使用 `GetCommandLineW()` (UTF-16)，不依赖代码页，可直接使用。仅在使用管道输入（`echo ... | piper`）时，需要先运行 `chcp 65001` 切换到 UTF-8。
+>
+> **output.wav 输出位置：** 生成在当前目录（即 `cd piper` 后的位置）。
 
 ### Python 推理
 
@@ -93,6 +145,23 @@ uv run python -m piper_train.infer_onnx \
 
 主要选项：`--speaker-id`（说话人 ID）、`--device auto|cpu|gpu`、`--noise-scale`（音频变化）、`--length-scale`（语速）
 
+> **WavLM 模型推荐设置：** 使用 WavLM Discriminator 训练的模型（如 Tsukuyomi-chan 等）建议设置 `--noise-scale 0.5` 以获得最佳音质（默认值为 0.667）。
+
+#### Python CLI 模型管理
+
+```bash
+# 显示模型列表
+python -m piper --list-models
+python -m piper --list-models ja
+
+# 下载模型
+python -m piper --download-model tsukuyomi
+python -m piper --download-model ja_JP-tsukuyomi-chan-medium
+
+# 下载后使用
+python -m piper --model ja_JP-tsukuyomi-chan-medium --text "こんにちは" -f output.wav
+```
+
 ### WebUI
 
 ```bash
@@ -108,7 +177,7 @@ python -m piper.webui --data-dir /path/to/models
 
 ```sh
 echo 'Welcome to the world of speech synthesis!' | \
-  ./piper --model en_US-lessac-medium.onnx --output_file welcome.wav
+  ./bin/piper --model en_US-lessac-medium.onnx --output_file welcome.wav
 ```
 
 ### Docker
@@ -176,6 +245,34 @@ uv pip install ".[dev]"
 pip install piper-tts-plus
 ```
 
+### 从包管理器安装
+
+**Python (PyPI):**
+```bash
+pip install piper-tts-plus
+```
+
+**C# CLI (.NET 全局工具):**
+```bash
+dotnet tool install -g PiperPlus.Cli
+```
+
+**Rust CLI (crates.io):**
+```bash
+cargo install piper-plus-cli
+```
+
+**C# 库 (NuGet):**
+```bash
+dotnet add package PiperPlus.Core
+```
+
+**Rust 库 (crates.io):**
+```toml
+[dependencies]
+piper-plus = "0.1.0"
+```
+
 ### 从源码构建 (C++)
 
 ```bash
@@ -192,39 +289,145 @@ cmake --build . --config Release
 - **Windows**：参阅 [Windows 设置指南](docs/getting-started/windows-setup.md)
 - **macOS**：依赖项自动下载
 
+### 从源码构建 (C#)
+
+```bash
+# C# CLI 构建
+dotnet build src/csharp/PiperPlus.sln -c Release
+# 测试
+dotnet test src/csharp/PiperPlus.Core.Tests/
+```
+
+前提条件：.NET 8 SDK 以上
+
+#### C# CLI 使用示例
+
+```bash
+# 使用模型名推理（支持自动下载，省略 --output-file 时输出为 output.wav）
+piper-plus --model tsukuyomi --text "こんにちは" --language ja
+
+# 英语
+piper-plus --model model.onnx --text "Hello world" --language en
+
+# 多语言（自动语言检测）
+piper-plus --model model.onnx --text "こんにちはHello你好" --language ja-en-zh
+
+# 内联音素标记（在文本中直接指定音素）
+piper-plus --model model.onnx --text "Hello [[ h ə l oʊ ]] world" --language en
+
+# 流式处理（逐句输出 PCM）
+piper-plus --model model.onnx --text "最初の文。次の文。" --language ja --streaming | aplay -r 22050 -f S16_LE
+
+# 自定义词典（JSON v1/v2 或 TSV）
+piper-plus --model model.onnx --text "AI技術" --language ja --custom-dict my_dict.json
+
+# 模型下载
+piper-plus --download-model tsukuyomi
+piper-plus --list-models ja
+
+# 测试模式（无需 ONNX 推理，查看 phoneme IDs）
+piper-plus --model model.onnx --test-mode --text "こんにちは" --language ja
+```
+
+#### Rust CLI 使用示例
+
+```bash
+# 使用模型名推理（支持自动下载）
+piper-plus-cli --model tsukuyomi --text "こんにちは" --language ja
+
+# 英语
+piper-plus-cli --model model.onnx --text "Hello world" --language en
+
+# 模型下载与管理
+piper-plus-cli --download-model tsukuyomi
+piper-plus-cli --list-models ja
+
+# 流式处理（逐句合成）
+piper-plus-cli --model model.onnx --text "First sentence. Second sentence." --stream --output-dir chunks/
+
+# 自定义词典
+piper-plus-cli --model model.onnx --text "AI技術" --custom-dict my_dict.json
+
+# GPU 推理
+piper-plus-cli --model model.onnx --text "Hello" --device cuda
+
+# 测试模式 / 静默模式
+piper-plus-cli --model model.onnx --test-mode --text "hello" --language en
+piper-plus-cli --model model.onnx --text "hello" --language en --quiet
+
+# 原始 PCM 输出（无 WAV 头）
+piper-plus-cli --model model.onnx --text "hello" --language en --output-raw | aplay -r 22050 -f S16_LE
+```
+
+> **注意：** C# CLI 可通过 `dotnet tool install -g PiperPlus.Cli` 安装，Rust CLI 可通过 `cargo install piper-plus-cli` 安装。两者均支持6语言、自定义词典和流式处理。
+
+### 从源码构建 (Rust)
+
+```bash
+# Rust CLI 构建
+cargo build --release -p piper-plus-cli
+# 测试
+cargo test -p piper-plus
+```
+
+前提条件：Rust 1.70+、cargo
+
 ---
 
 ## 使用方法
 
 ### C++ CLI
 
+#### 文本直接输入（推荐）
+
+使用 `--text` 选项可以直接输入文本，无需管道：
+
+```sh
+# 从文本生成语音
+./bin/piper --model model.onnx --text "Hello, how are you?" -f output.wav
+
+# 日语文本（避免 Windows 编码问题）
+bin\piper.exe --model models\tsukuyomi.onnx --text "こんにちは、今日は良い天気ですね。" -f output.wav
+
+# 指定说话人
+./bin/piper --model model.onnx --text "Hello" --speaker 3 -f output.wav
+```
+
+#### 管道输入
+
 ```sh
 # 基本用法
-echo "こんにちは" | ./piper --model ja_model.onnx --output_file output.wav
+echo "こんにちは" | ./bin/piper --model ja_model.onnx --output_file output.wav
 
 # 流式处理（低延迟）
-echo "长文本..." | ./piper --model ja_model.onnx --output_file output.wav --streaming
+echo "长文本..." | ./bin/piper --model ja_model.onnx --output_file output.wav --streaming
 
 # GPU 推理
-echo "Hello" | ./piper --model en_model.onnx --use-cuda --output_file output.wav
+echo "Hello" | ./bin/piper --model en_model.onnx --use-cuda --output_file output.wav
 
 # 音素时间输出（用于口型同步、字幕同步）
-echo "Hello world" | ./piper --model en_model.onnx -f speech.wav --output-timing timing.json
+echo "Hello world" | ./bin/piper --model en_model.onnx -f speech.wav --output-timing timing.json
 
 # 自定义词典
-echo "DockerとGitHubを使います" | ./piper --model ja_model.onnx --custom-dict my_dict.json -f output.wav
+echo "DockerとGitHubを使います" | ./bin/piper --model ja_model.onnx --custom-dict my_dict.json -f output.wav
 
 # 内联音素输入
-echo 'Hello [[ h ə l oʊ ]] world' | ./piper --model en_model.onnx -f output.wav
+echo 'Hello [[ h ə l oʊ ]] world' | ./bin/piper --model en_model.onnx -f output.wav
 
 # 原始音素输入
-echo 'h ə l oʊ _ w ɜː l d' | ./piper --model en_model.onnx --raw-phonemes -f output.wav
+echo 'h ə l oʊ _ w ɜː l d' | ./bin/piper --model en_model.onnx --raw-phonemes -f output.wav
+
+# 流式处理（原始音频输出）
+echo 'Long text...' | ./bin/piper --model en_model.onnx --output-raw | \
+  aplay -r 22050 -f S16_LE -t raw -
 ```
 
 主要选项：
 
 | 选项 | 说明 | 默认值 |
 |---|---|---|
+| `--model PATH\|NAME` | 模型文件路径或模型名（自动解析已下载模型） | - |
+| `--text TEXT` | 文本直接输入（无需管道） | - |
 | `--streaming` | 分块流式处理模式 | off |
 | `--use-cuda` | 启用 CUDA GPU 推理 | off |
 | `--gpu-device-id NUM` | GPU 设备 ID | 0 |
@@ -238,8 +441,18 @@ echo 'h ə l oʊ _ w ɜː l d' | ./piper --model en_model.onnx --raw-phonemes -f
 | `--output-timing FILE` | 音素时间信息输出 (JSON/TSV) | - |
 | `--custom-dict FILE` | 自定义词典（逗号分隔可指定多个） | - |
 | `--json-input` | JSON 输入模式 | off |
+| `--list-models [LANG]` | 显示可用模型列表 | - |
+| `--download-model NAME` | 下载模型 | - |
+| `--model-dir DIR` | 模型下载目录 | - |
+| `--version` | 显示版本 | - |
 
 运行 `piper --help` 查看所有选项。
+
+> **WavLM 模型推荐设置：** 使用 WavLM Discriminator 训练的模型建议设置 `--noise-scale 0.5`（默认值为 0.667）。
+>
+> ```sh
+> echo "こんにちは" | ./bin/piper --model tsukuyomi.onnx --config config.json --noise-scale 0.5 -f output.wav
+> ```
 
 ### JSON 输入
 
@@ -249,6 +462,42 @@ echo 'h ə l oʊ _ w ɜː l d' | ./piper --model en_model.onnx --raw-phonemes -f
 { "text": "First speaker.", "speaker_id": 0, "output_file": "/tmp/speaker_0.wav" }
 { "text": "Second speaker.", "speaker_id": 1, "output_file": "/tmp/speaker_1.wav" }
 ```
+
+### 模型管理
+
+#### 显示模型列表
+
+```bash
+# 显示可用模型列表
+./bin/piper --list-models
+
+# 按语言筛选
+./bin/piper --list-models ja
+./bin/piper --list-models en
+```
+
+#### 下载模型
+
+```bash
+# 指定模型名下载（也可使用别名）
+./bin/piper --download-model tsukuyomi
+./bin/piper --download-model en_US-lessac-medium
+
+# 指定下载目录
+./bin/piper --download-model tsukuyomi --model-dir /path/to/models
+
+# 下载后使用模型名推理（无需完整路径）
+./bin/piper --model tsukuyomi --text "こんにちは"
+```
+
+### 环境变量 (C++ CLI)
+
+| 变量名 | 说明 | 示例 |
+|---|---|---|
+| `PIPER_DEFAULT_MODEL` | `--model` 未指定时的默认模型路径 | `/path/to/model.onnx` |
+| `PIPER_DEFAULT_CONFIG` | `--config` 未指定时的默认配置文件路径 | `/path/to/config.json` |
+| `PIPER_MODEL_DIR` | 下载模型的保存目录 | `~/.local/share/piper/models` |
+| `PIPER_GPU_DEVICE_ID` | CUDA GPU 设备 ID | `0` |
 
 ---
 
@@ -284,14 +533,20 @@ uv run python -m piper_train \
   --ema-decay 0.9995
 ```
 
-多 GPU 自动配置 DDP（分布式数据并行）。需要设置 NCCL 环境变量。详情请参阅[多 GPU 训练指南](docs/guides/training/multi-gpu-training.md)。
+多 GPU 自动配置 DDP（分布式数据并行）。需要设置 NCCL 环境变量。详情请参阅多 GPU 训练指南。
 
 ### ONNX 导出
 
+默认启用FP16转换，模型大小减少约50%。使用 `--no-fp16` 可以禁用。为保证数值稳定性，LayerNormalization、Sigmoid、Softmax 保持 FP32。
+
 ```bash
-# 标准模型
+# 标准模型（默认FP16，模型大小约50%）
 CUDA_VISIBLE_DEVICES="" uv run python -m piper_train.export_onnx \
   /path/to/checkpoint.ckpt /path/to/output.onnx
+
+# 禁用FP16（完整精度）
+CUDA_VISIBLE_DEVICES="" uv run python -m piper_train.export_onnx \
+  --no-fp16 /path/to/checkpoint.ckpt /path/to/output.onnx
 
 # WavLM 模型（必须使用 --stochastic）
 CUDA_VISIBLE_DEVICES="" uv run python -m piper_train.export_onnx \
@@ -302,6 +557,7 @@ CUDA_VISIBLE_DEVICES="" uv run python -m piper_train.export_onnx \
 
 - `--resume_from_checkpoint` — 从检查点恢复训练
 - `--resume_from_single_speaker_checkpoint` — 将单说话人模型转换为多说话人模型
+- `--resume-from-multispeaker-checkpoint` — 多说话人到单说话人的迁移学习（自动启用 `--freeze-dp`）
 
 ### 语音评估
 
@@ -311,20 +567,66 @@ CUDA_VISIBLE_DEVICES="" uv run python -m piper_train.export_onnx \
 
 ## 预训练模型
 
-日语 TTS 微调用基础模型已在 Hugging Face 上发布。
+推理用语音合成模型已在 Hugging Face 上发布。
 
-| 模型 | 说明 | 许可证 |
-|---|---|---|
-| [piper-plus-base](https://huggingface.co/ayousanz/piper-plus-base) | 日语 TTS 基础模型 (VITS + WavLM + Prosody) | CC-BY-SA-4.0 |
-| [piper-plus-tsukuyomi-chan](https://huggingface.co/ayousanz/piper-plus-tsukuyomi-chan) | Tsukuyomi-chan 微调模型 | 参阅模型卡 |
+**推理用模型（可直接使用）：**
+
+| 模型 | 语言 | 说话人数 | 说明 | 下载 |
+|---|---|---|---|---|
+| Tsukuyomi-chan 6lang | JA/EN/ZH/ES/FR/PT | 1 | Tsukuyomi-chan 语音，6语言支持，FP16 | [HuggingFace](https://huggingface.co/ayousanz/piper-plus-tsukuyomi-chan) |
+| CSS10 日语 6lang | JA/EN/ZH/ES/FR/PT | 1 | CSS10 日语语音，6语言支持，FP16 | [HuggingFace](https://huggingface.co/ayousanz/piper-plus-css10-ja-6lang) |
+
+**训练用基础模型（用于微调）：**
+
+| 模型 | 语言 | 说话人数 | 说明 | 下载 |
+|---|---|---|---|---|
+| 6语言基础模型 | JA/EN/ZH/ES/FR/PT | 571 | 多语言预训练 (508,187条语音, VITS + Prosody) | [HuggingFace](https://huggingface.co/ayousanz/piper-plus-base) |
+
+### 模型下载
+
+**Tsukuyomi-chan 模型：**
+
+**Windows (PowerShell):**
+
+```powershell
+mkdir models
+Invoke-WebRequest -Uri "https://huggingface.co/ayousanz/piper-plus-tsukuyomi-chan/resolve/main/tsukuyomi-chan-6lang-fp16.onnx" -OutFile models/tsukuyomi.onnx
+Invoke-WebRequest -Uri "https://huggingface.co/ayousanz/piper-plus-tsukuyomi-chan/resolve/main/config.json" -OutFile models/config.json
+```
+
+**macOS / Linux:**
+
+```bash
+mkdir -p models
+curl -L -o models/tsukuyomi.onnx https://huggingface.co/ayousanz/piper-plus-tsukuyomi-chan/resolve/main/tsukuyomi-chan-6lang-fp16.onnx
+curl -L -o models/config.json https://huggingface.co/ayousanz/piper-plus-tsukuyomi-chan/resolve/main/config.json
+```
+
+### 6语言基础模型特征（训练用）
 
 **piper-plus-base 特征：**
 
-- 架构：VITS + WavLM Discriminator
-- 训练数据：60,164 条语音（20 位说话人）
+- 架构：VITS + 韵律特征 (Prosody Features)
+- 语言：6种 — 日语 (ja)、英语 (en)、普通话 (zh)、西班牙语 (es)、法语 (fr)、葡萄牙语 (pt)
+- 训练数据：508,187 条语音（571 位说话人）
 - 采样率：22,050 Hz
-- 韵律特征：A1/A2/A3 韵律信息
-- 扩展音素：疑问标记、上下文相关「ん」变体（65 个音素）
+- 音素数：173
+- 韵律特征：A1/A2/A3 韵律信息（日语）
+- 扩展音素：疑问标记、上下文相关「ん」变体
+- 语言均衡采样：自动启用
+
+**语言ID映射：**
+
+| 语言 | ID | 说话人数 | 语音数 | 来源 |
+|---|---|---|---|---|
+| 日语 (ja) | 0 | 20 | 60,148 | MOE-Speech |
+| 英语 (en) | 1 | 310 | 74,912 | LibriTTS-R |
+| 普通话 (zh) | 2 | 142 | 63,223 | AISHELL-3 |
+| 西班牙语 (es) | 3 | 63 | 168,374 | CML-TTS |
+| 法语 (fr) | 4 | 28 | 107,464 | CML-TTS |
+| 葡萄牙语 (pt) | 5 | 8 | 34,066 | CML-TTS |
+
+> **注意：** piper-plus 进行了独自的架构扩展（多语言嵌入、韵律 A1/A2/A3、173个符号），因此与 upstream Piper 的检查点/ONNX 模型不兼容。请使用 piper-plus 专用模型。
 
 上游 Piper 检查点也可使用：[piper-checkpoints](https://huggingface.co/datasets/rhasspy/piper-checkpoints/tree/main)
 
@@ -342,7 +644,7 @@ CUDA_VISIBLE_DEVICES="" uv run python -m piper_train.export_onnx \
 | `PIPER_AUTO_DOWNLOAD_DICT` | 设为 `0` 禁用自动下载 |
 | `PIPER_OFFLINE_MODE` | 设为 `1` 启用离线模式 |
 
-详情请参阅[日语使用指南](docs/guides/japanese/japanese-usage.md)和[音素映射参考](docs/api-reference/phoneme-mapping.md)。
+详情请参阅日语使用指南和[音素映射参考](docs/api-reference/phoneme-mapping.md)。
 
 ---
 
@@ -408,11 +710,11 @@ Piper 的 Unity 插件：[github.com/ayutaz/uPiper](https://github.com/ayutaz/uP
 
 | 类别 | 链接 |
 |---|---|
-| 日语 TTS | [日语使用指南](docs/guides/japanese/japanese-usage.md) |
-| 训练 | [训练指南](docs/guides/training/training-guide.md) · [多 GPU](docs/guides/training/multi-gpu-training.md) |
+| 日语 TTS | 日语使用指南 |
+| 训练 | [训练指南](docs/guides/training/training-guide.md) · 多 GPU |
 | API | [音素映射](docs/api-reference/phoneme-mapping.md) · [环境变量](docs/getting-started/environment-variables.md) |
-| 功能 | [WebUI](docs/features/webui.md) · [CLI 增强](docs/features/cli-enhancements.md) · [流式处理](docs/features/streaming-mode.md) |
-| 设置 | [快速入门（日语）](docs/guides/japanese/japanese-usage.md) · [Windows](docs/getting-started/windows-setup.md) · [故障排除](docs/getting-started/troubleshooting.md) |
+| 功能 | [WebUI](docs/features/webui.md) · CLI 增强 · 流式处理 |
+| 设置 | 快速入门（日语） · [Windows](docs/getting-started/windows-setup.md) · [故障排除](docs/getting-started/troubleshooting.md) |
 | Docker | [Docker 环境](docker/README.md) |
 | WebAssembly | [技术详情](src/wasm/openjtalk-web/README.md) |
 
@@ -423,5 +725,3 @@ Piper 的 Unity 插件：[github.com/ayutaz/uPiper](https://github.com/ayutaz/uP
 ## 更新日志
 
 请参阅 [CHANGELOG.md](CHANGELOG.md)。
-
-[![A library from the Open Home Foundation](https://www.openhomefoundation.org/badges/ohf-library.png)](https://www.openhomefoundation.org/)

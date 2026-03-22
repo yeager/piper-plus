@@ -38,10 +38,10 @@ jobs:
       OPENJTALK_DICTIONARY_PATH: ${{ github.workspace }}/piper/share/open_jtalk/dic
 
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@v6
       
       - name: Download piper artifact
-        uses: actions/download-artifact@v4.1.8
+        uses: actions/download-artifact@v8
         with:
           name: piper-japanese-${{ matrix.os }}-${{ github.sha }}
       
@@ -52,10 +52,13 @@ jobs:
           chmod +x piper/bin/piper
           chmod +x piper/bin/open_jtalk || true
           
-          # Set library path for Linux
+          # Set library path for Linux and macOS
           if [ "${{ runner.os }}" = "Linux" ]; then
             export LD_LIBRARY_PATH="${PWD}/piper/lib:${LD_LIBRARY_PATH}"
             echo "LD_LIBRARY_PATH=${PWD}/piper/lib:${LD_LIBRARY_PATH}" >> $GITHUB_ENV
+          elif [ "${{ runner.os }}" = "macOS" ]; then
+            export DYLD_LIBRARY_PATH="${PWD}/piper/lib:${DYLD_LIBRARY_PATH}"
+            echo "DYLD_LIBRARY_PATH=${PWD}/piper/lib:${DYLD_LIBRARY_PATH}" >> $GITHUB_ENV
           fi
           
           # Verify OpenJTalk is available (check phonemizer version first)
@@ -91,7 +94,7 @@ jobs:
           }
       
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
       
@@ -142,7 +145,7 @@ jobs:
       
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@v4.6.0
+        uses: actions/upload-artifact@v7
         with:
           name: japanese-tts-test-results-${{ matrix.os }}-run${{ github.run_number }}
           path: |
@@ -155,7 +158,7 @@ jobs:
       
       - name: Upload audio artifacts
         if: always()
-        uses: actions/upload-artifact@v4.6.0
+        uses: actions/upload-artifact@v7
         with:
           name: japanese-tts-audio-files-${{ matrix.os }}-run${{ github.run_number }}
           path: |
@@ -164,7 +167,7 @@ jobs:
       
       - name: Upload test logs on failure
         if: failure()
-        uses: actions/upload-artifact@v4.6.0
+        uses: actions/upload-artifact@v7
         with:
           name: japanese-test-logs-${{ matrix.os }}-run${{ github.run_number }}
           path: |
@@ -181,15 +184,15 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-      - uses: actions/checkout@v4.2.2
+      - uses: actions/checkout@v6
       
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
       
       - name: Download all test results
-        uses: actions/download-artifact@v4.1.8
+        uses: actions/download-artifact@v8
         with:
           pattern: japanese-tts-test-results-*
           path: all-results
@@ -218,7 +221,7 @@ jobs:
       
       - name: Upload combined summary
         if: always()
-        uses: actions/upload-artifact@v4.6.0
+        uses: actions/upload-artifact@v7
         with:
           name: japanese-tts-combined-summary-run${{ github.run_number }}
           path: |

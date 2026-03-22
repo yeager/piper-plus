@@ -2,7 +2,7 @@ import json
 import logging
 import os
 import random
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,10 +30,11 @@ def _load_tensor(path: Path) -> torch.Tensor:
 
 @dataclass
 class Utterance:
-    phoneme_ids: list[int]
+    phoneme_ids: np.ndarray  # dtype=int16, shape=(num_phonemes,)
     audio_norm_path: Path
     audio_spec_path: Path
     speaker_id: int | None = None
+    language_id: int | None = None
     text: str | None = None
     prosody_features: list[dict | None] | None = None  # A1/A2/A3 per phoneme
     speaker_embedding_path: Path | None = None
@@ -45,6 +46,7 @@ class UtteranceTensors:
     spectrogram: FloatTensor
     audio_norm: FloatTensor
     speaker_id: LongTensor | None = None
+    language_id: LongTensor | None = None
     text: str | None = None
     prosody_features: LongTensor | None = None  # Shape: (num_phonemes, 3) for A1/A2/A3
     speaker_embedding: FloatTensor | None = None
@@ -63,6 +65,7 @@ class Batch:
     audios: FloatTensor
     audio_lengths: LongTensor
     speaker_ids: LongTensor | None = None
+    language_ids: LongTensor | None = None
     prosody_features: LongTensor | None = None  # Shape: (batch, max_phonemes, 3)
     speaker_embeddings: FloatTensor | None = None
 
@@ -85,6 +88,7 @@ class PiperDataset(Dataset):
         max_phoneme_ids: int | None = None,
         max_spec_length: int | None = None,
         filter_length: int = 1024,
+        validate_cache: bool = False,
     ):
         self.utterances: list[Utterance] = []
 
@@ -100,6 +104,22 @@ class PiperDataset(Dataset):
                 )
             )
 
+        if validate_cache:
+            before = len(self.utterances)
+            self.utterances = [
+                utt for utt in self.utterances if self._validate_cache_files(utt)
+            ]
+            removed = before - len(self.utterances)
+            if removed:
+                _LOGGER.warning(
+                    "validate_cache: removed %d corrupted/missing cache file(s) "
+                    "out of %d utterances.",
+                    removed,
+                    before,
+                )
+            else:
+                _LOGGER.info("validate_cache: all %d cache files are intact.", before)
+
     def __len__(self):
         return len(self.utterances)
 
@@ -108,44 +128,19 @@ class PiperDataset(Dataset):
         # 問題のあるファイルでロードが失敗した場合はスキップして次を試す
         while True:
             try:
-                audio_norm = torch.load(
-                    utt.audio_norm_path, map_location="cpu", weights_only=True
-                )
+                audio_norm = _load_tensor(utt.audio_norm_path)
                 if audio_norm.dim() == 1:
                     audio_norm = audio_norm.unsqueeze(0)
 
-                # Load spectrogram: prefer .npy, fallback to .pt for
-                # backward compatibility with older caches.
-                spec_path = utt.audio_spec_path
-                if spec_path.suffix == ".npy" and spec_path.exists():
-                    spectrogram = torch.from_numpy(
-                        np.load(spec_path, allow_pickle=False)
-                    )
-                elif spec_path.suffix == ".npy":
-                    # .npy not found — try legacy .spec.pt
-                    legacy_pt = spec_path.with_suffix(".pt")
-                    if legacy_pt.exists():
-                        spectrogram = torch.load(
-                            legacy_pt, map_location="cpu", weights_only=True
-                        )
-                    else:
-                        raise FileNotFoundError(
-                            f"Spectrogram cache not found: {spec_path} or {legacy_pt}"
-                        )
-                elif spec_path.suffix == ".pt" and spec_path.exists():
-                    # Dataset still references .spec.pt directly
-                    spectrogram = torch.load(
-                        spec_path, map_location="cpu", weights_only=True
-                    )
-                else:
-                    raise FileNotFoundError(f"Spectrogram cache not found: {spec_path}")
+                spectrogram = _load_tensor(utt.audio_spec_path)
+                # Convert float16 spec to float32 (new caches are saved as float16 to save disk space)
+                if spectrogram.dtype == torch.float16:
+                    spectrogram = spectrogram.float()
 
                 # Convert prosody_features to tensor if available
                 prosody_tensor = None
                 if utt.prosody_features is not None:
-                    prosody_tensor = self._prosody_features_to_tensor(
-                        utt.prosody_features
-                    )
+                    prosody_tensor = self._prosody_features_to_tensor(utt.prosody_features)
 
                 # Load speaker embedding from .npy file if available
                 speaker_embedding_tensor = None
@@ -164,6 +159,11 @@ class PiperDataset(Dataset):
                         if utt.speaker_id is not None
                         else None
                     ),
+                    language_id=(
+                        LongTensor([utt.language_id])
+                        if utt.language_id is not None
+                        else None
+                    ),
                     text=utt.text,
                     prosody_features=prosody_tensor,
                     speaker_embedding=speaker_embedding_tensor,
@@ -176,18 +176,16 @@ class PiperDataset(Dataset):
                     e,
                 )
 
-                # 破損ファイルとみなし、データセットから除外
-                self.utterances.pop(idx)
-
-                # データがすべて無効になった場合はエラー
-                if len(self.utterances) == 0:
-                    raise RuntimeError("All utterances failed to load") from e
-
-                # 同じインデックスで次の要素を再試行
-                if idx >= len(self.utterances):
-                    idx = len(self.utterances) - 1
-                utt = self.utterances[idx]
-                # 次のファイルでリトライ（ログは出さない）
+    @staticmethod
+    def _validate_cache_files(utt: Utterance) -> bool:
+        """Check that both cached audio files exist on disk."""
+        if not utt.audio_norm_path.exists():
+            _LOGGER.debug("Missing audio_norm: %s", utt.audio_norm_path)
+            return False
+        if not utt.audio_spec_path.exists():
+            _LOGGER.debug("Missing audio_spec: %s", utt.audio_spec_path)
+            return False
+        return True
 
     @staticmethod
     def _prosody_features_to_tensor(
@@ -305,6 +303,7 @@ class PiperDataset(Dataset):
             audio_norm_path=_resolve(utt_dict["audio_norm_path"]),
             audio_spec_path=_resolve(utt_dict["audio_spec_path"]),
             speaker_id=utt_dict.get("speaker_id"),
+            language_id=utt_dict.get("language_id"),
             text=utt_dict.get("text"),
             prosody_features=utt_dict.get("prosody_features"),
             speaker_embedding_path=_resolve(spk_emb_path) if spk_emb_path else None,
@@ -312,8 +311,11 @@ class PiperDataset(Dataset):
 
 
 class UtteranceCollate:
-    def __init__(self, is_multispeaker: bool, segment_size: int):
+    def __init__(
+        self, is_multispeaker: bool, segment_size: int, is_multilanguage: bool = False
+    ):
         self.is_multispeaker = is_multispeaker
+        self.is_multilanguage = is_multilanguage
         self.segment_size = segment_size
 
     def __call__(self, utterances: Sequence[UtteranceTensors]) -> Batch:
@@ -371,6 +373,10 @@ class UtteranceCollate:
         if self.is_multispeaker:
             speaker_ids = LongTensor(num_utterances)
 
+        language_ids: LongTensor | None = None
+        if self.is_multilanguage:
+            language_ids = LongTensor(num_utterances).zero_()
+
         # Create prosody tensor if any utterance has prosody features
         prosody_padded: LongTensor | None = None
         if has_prosody:
@@ -398,6 +404,9 @@ class UtteranceCollate:
             if self.is_multispeaker and utt.speaker_id is not None:
                 assert speaker_ids is not None
                 speaker_ids[utt_idx] = utt.speaker_id
+
+            if utt.language_id is not None and language_ids is not None:
+                language_ids[utt_idx] = utt.language_id
 
             if prosody_padded is not None and utt.prosody_features is not None:
                 # prosody_features の長さが phoneme_length と異なる場合に対応
@@ -432,6 +441,7 @@ class UtteranceCollate:
             audios=audio_padded,
             audio_lengths=audio_lengths,
             speaker_ids=speaker_ids,
+            language_ids=language_ids,
             prosody_features=prosody_padded,
             speaker_embeddings=speaker_embeddings,
         )
@@ -448,6 +458,13 @@ class SpeakerBalancedBatchSampler:
     このサンプラーは各バッチに同一話者からsamples_per_speaker個のサンプルを
     含めることで、SDPの学習を安定化させる。
 
+    language_group_balance の動作:
+        - True: 言語グループ (JA/EN) を 50:50 でバランスする（強制有効化）
+        - False: バランスしない（強制無効化）
+        - None (デフォルト): 自動判定。言語間の話者数比が 3:1 以上の場合に自動有効化。
+        EN 話者数 >> JA 話者数の場合に JA 音質が劣化するのを防ぐ。
+        例: 20 JA話者 + 310 EN話者 → 各バッチで JA 5話者 + EN 5話者 を保証
+
     DDP (Distributed Data Parallel) 対応:
     - torch.distributedが初期化されている場合、各GPUが異なるバッチを取得
     - 全GPUで同じseedを使用してバッチ生成順序を揃え、
@@ -458,13 +475,14 @@ class SpeakerBalancedBatchSampler:
         batch_size: バッチサイズ
         samples_per_speaker: 各話者からのサンプル数 (デフォルト: 4)
         drop_last: 最後の不完全バッチを捨てるか (デフォルト: True)
+        language_group_balance: 言語グループ (JA/EN) を 50:50 でバランスするか (デフォルト: None=自動判定)
 
     Example:
         batch_size=32, samples_per_speaker=4 の場合:
         → 8話者 × 4サンプル = 32サンプル/バッチ
 
-        バッチ構成例:
-        [話者0×4, 話者3×4, 話者7×4, 話者12×4, 話者5×4, 話者18×4, 話者9×4, 話者15×4]
+        language_group_balance=True の場合:
+        → JA 4話者 × 4サンプル + EN 4話者 × 4サンプル = 32サンプル/バッチ
     """
 
     def __init__(
@@ -473,10 +491,12 @@ class SpeakerBalancedBatchSampler:
         batch_size: int,
         samples_per_speaker: int = 4,
         drop_last: bool = True,
+        language_group_balance: bool | None = None,
     ):
         # 話者ごとにインデックスをグループ化
         # Subsetの場合は元のデータセットのutterancesを参照
         self.speaker_to_indices: dict[int, list[int]] = defaultdict(list)
+        speaker_to_language: dict[int, int] = {}
 
         # datasetがSubsetの場合の対応
         if hasattr(dataset, "indices") and hasattr(dataset, "dataset"):
@@ -487,11 +507,19 @@ class SpeakerBalancedBatchSampler:
                 utt = original_dataset.utterances[original_idx]
                 speaker_id = utt.speaker_id if utt.speaker_id is not None else 0
                 self.speaker_to_indices[speaker_id].append(subset_idx)
+                if speaker_id not in speaker_to_language:
+                    speaker_to_language[speaker_id] = (
+                        utt.language_id if utt.language_id is not None else 0
+                    )
         else:
             # PiperDataset または utterances属性を持つデータセット
             for idx, utt in enumerate(dataset.utterances):
                 speaker_id = utt.speaker_id if utt.speaker_id is not None else 0
                 self.speaker_to_indices[speaker_id].append(idx)
+                if speaker_id not in speaker_to_language:
+                    speaker_to_language[speaker_id] = (
+                        utt.language_id if utt.language_id is not None else 0
+                    )
 
         self.speakers = list(self.speaker_to_indices.keys())
         self.batch_size = batch_size
@@ -502,6 +530,49 @@ class SpeakerBalancedBatchSampler:
         # 実際のバッチサイズを調整
         self.effective_batch_size = self.speakers_per_batch * samples_per_speaker
         self.drop_last = drop_last
+
+        # 自動判定: language_group_balance が None の場合
+        if language_group_balance is None:
+            lang_speaker_counts = Counter(speaker_to_language.values())
+            if len(lang_speaker_counts) >= 2:
+                majority = max(lang_speaker_counts.values())
+                minority = min(lang_speaker_counts.values())
+                ratio = majority / minority if minority > 0 else float("inf")
+                if ratio >= 3.0:
+                    language_group_balance = True
+                    _LOGGER.info(
+                        "Auto-enabled language-balanced sampling "
+                        "(speaker ratio %.1f:1, threshold 3.0)",
+                        ratio,
+                    )
+                else:
+                    language_group_balance = False
+            else:
+                language_group_balance = False
+
+        self.language_group_balance = language_group_balance
+
+        # 言語グループ均等サンプリングの準備
+        self.lang_groups: dict[int, list[int]] = defaultdict(list)
+        if language_group_balance:
+            for spk_id in self.speakers:
+                lang = speaker_to_language.get(spk_id, 0)
+                self.lang_groups[lang].append(spk_id)
+            # N言語均等スロット配分
+            n_lang_groups = len(self.lang_groups)
+            base_slots = self.speakers_per_batch // n_lang_groups
+            remainder = self.speakers_per_batch % n_lang_groups
+            # lang_slots: {lang_id: num_slots}
+            # 余りは先頭言語に配分
+            self.lang_slots: dict[int, int] = {}
+            for i, lang_id in enumerate(sorted(self.lang_groups.keys())):
+                self.lang_slots[lang_id] = base_slots + (1 if i < remainder else 0)
+            lang_counts = {lang: len(spks) for lang, spks in self.lang_groups.items()}
+            _LOGGER.info(
+                "Language group balance enabled: %s, lang_slots=%s",
+                lang_counts,
+                self.lang_slots,
+            )
 
         # DDP対応: rank と world_size を取得
         if torch.distributed.is_initialized():
@@ -545,41 +616,78 @@ class SpeakerBalancedBatchSampler:
         }
         speaker_pointers = dict.fromkeys(self.speakers, 0)
 
-        batch_idx = 0
-        yielded = 0
-        max_batches = self.__len__()
+        # 全バッチを先に生成してから world_size の倍数に切り詰める
+        # これにより全 DDP rank が同じバッチ数を受け取ることを保証する
+        all_batches = []
         while True:
-            # 十分なサンプルが残っている話者を選択
-            available_speakers = [
-                spk
-                for spk in self.speakers
-                if speaker_pointers[spk] + self.samples_per_speaker
-                <= len(speaker_indices[spk])
-            ]
+            if self.language_group_balance:
+                # N言語グループ均等サンプリング
+                lang_available: dict[int, list[int]] = {}
+                for lang_id, speakers_in_lang in self.lang_groups.items():
+                    lang_available[lang_id] = [
+                        spk
+                        for spk in speakers_in_lang
+                        if speaker_pointers[spk] + self.samples_per_speaker
+                        <= len(speaker_indices[spk])
+                    ]
+                # 全言語グループがスロット数を満たせるか確認
+                if any(
+                    len(lang_available.get(lang_id, []))
+                    < self.lang_slots.get(lang_id, 0)
+                    for lang_id in self.lang_slots
+                ):
+                    break
+                batch_speakers = []
+                for lang_id in sorted(self.lang_slots.keys()):
+                    n_slots = self.lang_slots[lang_id]
+                    batch_speakers.extend(rng.sample(lang_available[lang_id], n_slots))
+            else:
+                # 従来の全話者均等サンプリング
+                available_speakers = [
+                    spk
+                    for spk in self.speakers
+                    if speaker_pointers[spk] + self.samples_per_speaker
+                    <= len(speaker_indices[spk])
+                ]
+                if len(available_speakers) < self.speakers_per_batch:
+                    break
+                batch_speakers = rng.sample(available_speakers, self.speakers_per_batch)
 
-            if len(available_speakers) < self.speakers_per_batch:
-                break
-
-            # ランダムに話者を選択
-            batch_speakers = rng.sample(available_speakers, self.speakers_per_batch)
             batch = []
-
             for spk in batch_speakers:
                 start = speaker_pointers[spk]
                 end = start + self.samples_per_speaker
                 batch.extend(speaker_indices[spk][start:end])
                 speaker_pointers[spk] = end
 
-            # DDP: このGPUが担当するバッチのみを返す
+            all_batches.append(batch)
+
+        # DDP: world_size の倍数に切り詰めて全 rank が同じバッチ数を受け取る
+        usable = (len(all_batches) // self.world_size) * self.world_size
+        for batch_idx in range(usable):
             if batch_idx % self.world_size == self.rank:
-                yield batch
-                yielded += 1
-                # DDP: 全rankで同数のバッチを保証（NCCL deadlock防止）
-                if yielded >= max_batches:
-                    return
-            batch_idx += 1
+                yield all_batches[batch_idx]
 
     def __len__(self) -> int:
+        if self.language_group_balance:
+            # N言語グループ均等サンプリング: 各言語の総利用可能バッチ数で推定
+            # __iter__ は話者が使い切られても他の話者が残っていれば継続するため、
+            # 各言語の「全話者の合計利用可能サンプル数 / slots」で推定する
+            lang_batches_list = []
+            for lang_id, slots in self.lang_slots.items():
+                speakers_in_lang = self.lang_groups.get(lang_id, [])
+                if not speakers_in_lang or slots == 0:
+                    continue
+                total_usable = sum(
+                    (len(self.speaker_to_indices[s]) // self.samples_per_speaker)
+                    for s in speakers_in_lang
+                )
+                batches = total_usable // slots
+                lang_batches_list.append(batches)
+            if lang_batches_list:
+                total_batches = min(lang_batches_list)
+                return max(1, total_batches // self.world_size)
+
         # より正確な計算: 各話者から取れるバッチ数を計算
         # 話者間でサンプル消費のタイミングがずれるため、最小話者のサンプル数で制限
         min_samples = min(len(indices) for indices in self.speaker_to_indices.values())

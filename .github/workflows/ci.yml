@@ -8,10 +8,14 @@ on:
     branches:
       - dev
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   cpp-tests:
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -19,12 +23,12 @@ jobs:
         build_type: [Release, Debug]
         
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: recursive
       
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
       
@@ -263,6 +267,109 @@ jobs:
           fi
         shell: bash
 
+  csharp-tests:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: |
+            8.0.x
+            9.0.x
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v5
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('src/csharp/**/*.csproj') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Build C# solution
+        run: dotnet build src/csharp/PiperPlus.sln -c Release
+
+      - name: Check formatting
+        run: dotnet format src/csharp/PiperPlus.sln --verify-no-changes --no-restore
+
+      - name: Run C# tests
+        shell: bash
+        run: |
+          dotnet test src/csharp/PiperPlus.sln -c Release --no-build \
+            --logger "trx;LogFileName=test-results.xml" \
+            --collect:"XPlat Code Coverage" \
+            --settings src/csharp/PiperPlus.runsettings
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: csharp-test-results-${{ matrix.os }}
+          path: |
+            **/TestResults/test-results.xml
+            **/coverage.cobertura.xml
+          retention-days: 30
+
+  csharp-build:
+    runs-on: ${{ matrix.os }}
+    needs: csharp-tests
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            rid: linux-x64
+          - os: macos-14
+            rid: osx-arm64
+          - os: windows-latest
+            rid: win-x64
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: |
+            8.0.x
+            9.0.x
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v5
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('src/csharp/**/*.csproj') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Publish self-contained binary
+        run: >
+          dotnet publish src/csharp/PiperPlus.Cli/PiperPlus.Cli.csproj
+          -c Release
+          -r ${{ matrix.rid }}
+          --self-contained true
+          -p:PublishSingleFile=true
+          -p:PublishTrimmed=true
+          -p:PublishReadyToRun=true
+          -o publish/
+
+      - name: Verify binary exists
+        run: ls -lh publish/
+        shell: bash
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: piper-plus-cli-${{ matrix.rid }}
+          path: publish/
+          retention-days: 7
+
   python-tests:
     runs-on: ${{ matrix.os }}
     strategy:
@@ -272,10 +379,10 @@ jobs:
         python-version: ['3.11']
         
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
       
@@ -347,21 +454,59 @@ jobs:
           fi
       
       - name: Upload coverage reports
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v5
         if: matrix.python-version == '3.11' && runner.os == 'Linux'
         with:
-          file: ./coverage.xml
+          files: ./coverage.xml
           flags: python
           name: Python ${{ matrix.python-version }} - ${{ runner.os }}
+
+  rust-tests:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest]
+    defaults:
+      run:
+        working-directory: src/rust
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src/rust -> target
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace -- -D warnings
+        continue-on-error: true
+
+      - name: Run tests
+        run: cargo test -p piper-plus --no-fail-fast
+
+      - name: Run tests (naist-jdic)
+        run: cargo test -p piper-plus --features naist-jdic --no-fail-fast
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+
+      - name: Check piper-plus-python
+        run: cargo check -p piper-plus-python
 
   lint:
     runs-on: ubuntu-latest
     
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
       
