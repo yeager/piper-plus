@@ -678,6 +678,8 @@ class VitsModel(pl.LightningModule):
 
             # Generator loss
             loss_dur = torch.sum(l_length.float())
+            # Clamp SDP NLL to prevent loss_dur from dominating loss_gen_all
+            loss_dur = torch.clamp(loss_dur, min=-100.0)
             loss_mel = F.l1_loss(y_mel, y_hat_mel) * self.hparams.c_mel
             loss_kl = kl_loss(z_p, logs_q, m_p, logs_p, z_mask) * kl_weight
 
@@ -767,6 +769,11 @@ class VitsModel(pl.LightningModule):
                         self.dino_center.clamp_(min=-10, max=10)
 
             self._log_with_batch_info("loss_gen_all", loss_gen_all, batch)
+            self._log_with_batch_info("loss_mel", loss_mel, batch)
+            self._log_with_batch_info("loss_kl", loss_kl, batch)
+            self._log_with_batch_info("loss_dur", loss_dur, batch)
+            self._log_with_batch_info("loss_fm", loss_fm, batch)
+            self._log_with_batch_info("loss_gen", loss_gen, batch)
             self._log_with_batch_info("kl_weight", kl_weight, batch)
 
             return loss_gen_all

@@ -20,7 +20,7 @@ Piper TTSは高品質なニューラルテキスト音声合成システムで�
 | SCL | Speaker Consistency Loss（`--speaker-encoder-path` 指定時有効、c_spk=1.0） |
 | DINO | 自己蒸留（EMA teacher、momentum=0.996、c_dino=0.5） |
 | KLアニーリング | 10エポック（0.1→1.0 線形増加） |
-| Flow | mean_only=False, dilation_rate=2 |
+| Flow | mean_only=True, dilation_rate=2 |
 | Decoder | FiLM条件付け (scale+shift) |
 | 推論デフォルト | noise_scale=0.4, noise_scale_w=0.5 |
 
@@ -106,10 +106,10 @@ WavLM Discriminator学習は150/200 epochで中断。音割れ（クリッピン
 
 Zero-Shot TTS の話者再現精度・学習安定性・推論品質を大幅に向上させる10項目の改善。Phase 1（spk_proj MLP、SCL、DINO、L2正規化除去）をベースに、モデルアーキテクチャと学習手法の両面から強化。
 
-**1. Flow改善: mean_only=False + dilation_rate=2:**
-- `ResidualCouplingBlock` で `mean_only=False`（分散学習有効化）。affine coupling の scale も学習されるようになり、posterior→prior 変換の表現力が向上
+**1. Flow改善: mean_only=True + dilation_rate=2:**
+- `ResidualCouplingBlock` で `mean_only=True`（平均のみ学習）。`mean_only=False` はaffine couplingのscaleが崩壊（scale collapse）する問題が発生したため `mean_only=True` に戻した
 - `dilation_rate=2`: 指数的受容野の拡大（1,2,4,8,...）で長距離依存性をキャプチャ
-- 旧VITS実装の `mean_only=True` から変更
+- dilation_rate=2 は旧VITS実装の `dilation_rate=1` から変更し維持
 
 **2. TextEncoder話者条件付け:**
 - `TextEncoder` に `gin_channels` 入力を追加、`self.cond = nn.Conv1d(gin_channels, hidden_channels, 1)`
@@ -158,7 +158,7 @@ Zero-Shot TTS の話者再現精度・学習安定性・推論品質を大幅に
 - `spk_emb_dropout=0.5`（デフォルト）: dual-mode学習でemb_gとspk_projの両方を活用
 
 **実装ファイル:**
-- `src/python/piper_train/vits/models.py` — Flow mean_only=False、TextEncoder gin_channels条件付け、Decoder FiLM、DP cond_scale
+- `src/python/piper_train/vits/models.py` — Flow mean_only=True + dilation_rate=2、TextEncoder gin_channels条件付け、Decoder FiLM、DP cond_scale
 - `src/python/piper_train/vits/lightning.py` — KLアニーリング、speaker embedding摂動、validation実embedding
 - `src/python/piper_train/vits/ema.py` — EMA spk_proj対応
 - `src/python/piper_train/infer_onnx.py` — 推論デフォルト最適化
@@ -595,6 +595,14 @@ cat test.jsonl | CUDA_VISIBLE_DEVICES="" uv run python -m piper_train.infer_onnx
 1. `--kl-annealing-epochs 10`（デフォルト）を確認。0に設定するとアニーリング無効
 2. ログで `kl_weight` の値を確認。アニーリング中は 0.1 から 1.0 へ線形増加
 3. 途中再開の場合、`current_epoch` がアニーリング期間内か確認
+
+### loss_durがloss_gen_allを支配する
+
+**原因**: StochasticDurationPredictor (SDP) のNLL損失が無制限に負に発散し、loss_gen_all全体を引き下げる
+
+**対処法**:
+1. `loss_dur` に `clamp(min=-100)` を適用して下限を設ける
+2. 個別損失ログ（loss_dur, loss_kl, loss_mel等）を監視し、loss_durの異常な負値を早期検出
 
 ### ONNX変換エラー
 

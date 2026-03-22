@@ -157,6 +157,12 @@ def main():
         help="DINO self-distillation loss weight (default: 0.5)",
     )
     parser.add_argument(
+        "--c-dur",
+        type=float,
+        default=1.0,
+        help="Duration loss weight (default: 1.0)",
+    )
+    parser.add_argument(
         "--speaker-encoder-path",
         default=None,
         help="Path to CAM++ ONNX model for Speaker Consistency Loss (SCL). "

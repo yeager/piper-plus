@@ -268,7 +268,7 @@ class ResidualCouplingBlock(nn.Module):
                     dilation_rate,
                     n_layers,
                     gin_channels=gin_channels,
-                    mean_only=False,
+                    mean_only=True,
                 )
             )
             self.flows.append(modules.Flip())

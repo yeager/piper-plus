@@ -625,11 +625,11 @@ class TestGeneratorFiLMConditioning:
 
 
 class TestFlowVarianceLearning:
-    """Test that Flow uses mean_only=False for variance learning"""
+    """Test that Flow uses mean_only=True (mean-only affine coupling)"""
 
     @pytest.mark.unit
-    def test_flow_mean_only_false(self):
-        """ResidualCouplingBlock layers have mean_only=False"""
+    def test_flow_mean_only_true(self):
+        """ResidualCouplingBlock layers have mean_only=True"""
         flow = ResidualCouplingBlock(
             channels=192,
             hidden_channels=192,
@@ -641,13 +641,13 @@ class TestFlowVarianceLearning:
         )
         for i, module in enumerate(flow.flows):
             if hasattr(module, 'mean_only'):
-                assert module.mean_only is False, (
-                    f"Flow layer {i} should have mean_only=False, got True"
+                assert module.mean_only is True, (
+                    f"Flow layer {i} should have mean_only=True, got False"
                 )
 
     @pytest.mark.unit
-    def test_flow_post_output_channels_doubled(self):
-        """With mean_only=False, ResidualCouplingLayer.post outputs 2x half_channels (mean + log_var)"""
+    def test_flow_post_output_channels_mean_only(self):
+        """With mean_only=True, ResidualCouplingLayer.post outputs half_channels (mean only)"""
         flow = ResidualCouplingBlock(
             channels=192,
             hidden_channels=192,
@@ -660,16 +660,16 @@ class TestFlowVarianceLearning:
         half_channels = 192 // 2  # 96
         for module in flow.flows:
             if hasattr(module, 'post'):
-                # mean_only=False: post outputs half_channels * 2 = channels
-                expected = half_channels * 2
+                # mean_only=True: post outputs half_channels * (2 - 1) = half_channels
+                expected = half_channels
                 actual = module.post.weight.shape[0]
                 assert actual == expected, (
-                    f"Flow post output should be {expected} (mean_only=False), got {actual}"
+                    f"Flow post output should be {expected} (mean_only=True), got {actual}"
                 )
 
     @pytest.mark.unit
-    def test_synthesizer_flow_mean_only_false(self):
-        """SynthesizerTrn flow uses mean_only=False"""
+    def test_synthesizer_flow_mean_only_true(self):
+        """SynthesizerTrn flow uses mean_only=True"""
         model = SynthesizerTrn(
             **MODEL_PARAMS,
             n_speakers=1,
@@ -679,8 +679,8 @@ class TestFlowVarianceLearning:
         )
         for module in model.flow.flows:
             if hasattr(module, 'mean_only'):
-                assert module.mean_only is False, (
-                    "SynthesizerTrn flow should use mean_only=False"
+                assert module.mean_only is True, (
+                    "SynthesizerTrn flow should use mean_only=True"
                 )
 
     @pytest.mark.unit
