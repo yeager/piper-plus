@@ -163,10 +163,9 @@ def main() -> None:
     # Inference only
     model_g.eval()
 
-    with torch.no_grad():
-        model_g.dec.remove_weight_norm()
-
-    # Apply EMA weights to decoder if available
+    # Apply EMA weights BEFORE remove_weight_norm().
+    # remove_weight_norm() fuses weight_g/weight_v into weight, changing
+    # parameter names so that EMA shadow params no longer match.
     if args.use_ema:
         ckpt = torch.load(args.checkpoint, map_location="cpu")
         ema_state = ckpt.get("ema_generator_state")
@@ -208,6 +207,9 @@ def main() -> None:
                 )
 
         del ckpt
+
+    with torch.no_grad():
+        model_g.dec.remove_weight_norm()
 
     # Check if model uses prosody features
     has_prosody = getattr(model_g, "prosody_dim", 0) > 0
